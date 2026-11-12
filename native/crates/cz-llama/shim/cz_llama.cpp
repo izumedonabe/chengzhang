@@ -1,0 +1,304 @@
+// Thin C ABI over llama.cpp + libmtmd: exactly what 成章 needs, nothing else.
+//   ASR:  Qwen3-ASR (audio encoder via libmtmd + Qwen3 decoder), one call per segment.
+//   LLM:  N cached prompt prefixes ("slots", one per mode) + one working sequence that
+//         starts as a copy of a slot and is extended incrementally while the user talks.
+// Everything here runs on one thread (the engine thread on the Rust side).
+#include "llama.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#define CZ_API extern "C" __attribute__((visibility("default")))
+
+static int g_verbose = 0;
+
+static void cz_log(enum ggml_log_level level, const char * text, void *) {
+    if (g_verbose || level == GGML_LOG_LEVEL_ERROR) {
+        fputs(text, stderr);
+    }
+}
+
+CZ_API void cz_init(int verbose) {
+    g_verbose = verbose;
+    llama_log_set(cz_log, nullptr);
+    mtmd_helper_log_set(cz_log, nullptr);
+    llama_backend_init();
+}
+
+// ----------------------------------------------------------------------------- helpers
+
+static std::vector<llama_token> tokenize(const llama_vocab * vocab, const char * text, bool special) {
+    int n = (int) strlen(text);
+    std::vector<llama_token> toks(n + 8);
+    int k = llama_tokenize(vocab, text, n, toks.data(), (int) toks.size(), false, special);
+    if (k < 0) {
+        toks.resize(-k);
+        k = llama_tokenize(vocab, text, n, toks.data(), (int) toks.size(), false, special);
+    }
+    toks.resize(k < 0 ? 0 : k);
+    return toks;
+}
+
+// decode `toks` into sequence `seq` starting at `pos`; logits only for the last token
+static int decode_seq(llama_context * ctx, const std::vector<llama_token> & toks, llama_seq_id seq,
+                      llama_pos pos, bool want_logits) {
+    const int n_batch = (int) llama_n_batch(ctx);
+    llama_batch b = llama_batch_init(n_batch, 0, 1);
+    for (size_t i = 0; i < toks.size(); i += n_batch) {
+        const int n = (int) std::min(toks.size() - i, (size_t) n_batch);
+        b.n_tokens = n;
+        for (int j = 0; j < n; j++) {
+            b.token[j] = toks[i + j];
+            b.pos[j] = pos + (llama_pos) (i + j);
+            b.n_seq_id[j] = 1;
+            b.seq_id[j][0] = seq;
+            b.logits[j] = want_logits && (i + j == toks.size() - 1);
+        }
+        if (llama_decode(ctx, b) != 0) {
+            llama_batch_free(b);
+            return -1;
+        }
+    }
+    llama_batch_free(b);
+    return 0;
+}
+
+static llama_pos next_pos(llama_context * ctx, llama_seq_id seq) {
+    return llama_memory_seq_pos_max(llama_get_memory(ctx), seq) + 1;  // -1 + 1 = 0 when empty
+}
+
+static llama_context * make_ctx(llama_model * model, int n_ctx, int n_seq, int n_batch) {
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx = n_ctx;
+    cp.n_batch = n_batch;
+    cp.n_ubatch = n_batch;
+    cp.n_seq_max = n_seq;
+    // Each sequence gets its own KV stream (n_ctx per sequence): seq_cp then really copies
+    // the prefix (~20 MB, on the GPU) but attention never scans the other slots' cells.
+    // (kv_unified would share prefix cells but attend over every slot on every token.)
+    cp.kv_unified = false;
+    cp.n_ctx = n_ctx * n_seq;
+    cp.n_threads = 4;
+    cp.n_threads_batch = cp.n_threads;
+    cp.no_perf = getenv("CZ_PROFILE") == nullptr;
+    return llama_init_from_model(model, cp);
+}
+
+static llama_model * load_model(const char * path) {
+    llama_model_params mp = llama_model_default_params();
+    mp.n_gpu_layers = 999;
+    // CZ_NOMMAP: read weights into anonymous GPU buffers instead of mapping the file
+    mp.load_mode = getenv("CZ_NOMMAP") ? LLAMA_LOAD_MODE_NONE : LLAMA_LOAD_MODE_MMAP;
+    return llama_model_load_from_file(path, mp);
+}
+
+// ----------------------------------------------------------------------------- ASR
+
+struct cz_asr {
+    llama_model * model = nullptr;
+    llama_context * ctx = nullptr;
+    mtmd_context * mtmd = nullptr;
+    llama_sampler * smpl = nullptr;
+};
+
+CZ_API void cz_asr_free(cz_asr * a) {
+    if (!a) return;
+    if (a->smpl) llama_sampler_free(a->smpl);
+    if (a->mtmd) mtmd_free(a->mtmd);
+    if (a->ctx) llama_free(a->ctx);
+    if (a->model) llama_model_free(a->model);
+    delete a;
+}
+
+CZ_API cz_asr * cz_asr_load(const char * model_path, const char * mmproj_path) {
+    auto * a = new cz_asr();
+    a->model = load_model(model_path);
+    if (!a->model) { cz_asr_free(a); return nullptr; }
+    a->ctx = make_ctx(a->model, 2048, 1, 2048);
+    if (!a->ctx) { cz_asr_free(a); return nullptr; }
+    mtmd_context_params mp = mtmd_context_params_default();
+    mp.use_gpu = true;
+    mp.print_timings = false;
+    mp.n_threads = 4;
+    mp.warmup = true;
+    a->mtmd = mtmd_init_from_file(mmproj_path, a->model, mp);
+    if (!a->mtmd || !mtmd_support_audio(a->mtmd)) { cz_asr_free(a); return nullptr; }
+    a->smpl = llama_sampler_init_greedy();
+    return a;
+}
+
+// Transcribe 16 kHz mono float PCM. `context` biases recognition (dictionary words),
+// `language` forces a language ("Chinese"…) or "" to auto-detect.
+// Writes UTF-8 text to `out`; returns its length, or < 0 on error.
+CZ_API int cz_asr_transcribe(cz_asr * a, const float * pcm, size_t n, const char * context,
+                             const char * language, int max_tokens, char * out, int out_cap) {
+    llama_memory_clear(llama_get_memory(a->ctx), true);
+    llama_sampler_reset(a->smpl);
+
+    // official Qwen3-ASR prompt; mtmd adds <|audio_start|>…<|audio_end|> around the marker
+    std::string prompt = "<|im_start|>system\n";
+    if (context && *context) { prompt += context; prompt += "\n"; }
+    prompt += "<|im_end|>\n<|im_start|>user\n";
+    prompt += mtmd_default_marker();
+    prompt += "<|im_end|>\n<|im_start|>assistant\n";
+    const bool forced = language && *language;
+    if (forced) { prompt += "language "; prompt += language; prompt += "<asr_text>"; }
+
+    mtmd_bitmap * bmp = mtmd_bitmap_init_from_audio(n, pcm);
+    mtmd_input_chunks * chunks = mtmd_input_chunks_init();
+    mtmd_input_text txt = {prompt.c_str(), prompt.size(), false, true};
+    const mtmd_bitmap * bmps[1] = {bmp};
+    int rc = mtmd_tokenize(a->mtmd, chunks, &txt, bmps, 1);
+    llama_pos n_past = 0;
+    if (rc == 0) {
+        rc = mtmd_helper_eval_chunks(a->mtmd, a->ctx, chunks, 0, 0, (int) llama_n_batch(a->ctx), true, &n_past);
+    }
+    mtmd_input_chunks_free(chunks);
+    mtmd_bitmap_free(bmp);
+    if (rc != 0) return -2;
+
+    const llama_vocab * vocab = llama_model_get_vocab(a->model);
+    std::string text;
+    llama_batch b = llama_batch_init(1, 0, 1);
+    char piece[256];
+    for (int i = 0; i < max_tokens; i++) {
+        llama_token t = llama_sampler_sample(a->smpl, a->ctx, -1);
+        if (llama_vocab_is_eog(vocab, t)) break;
+        int k = llama_token_to_piece(vocab, t, piece, sizeof(piece), 0, true);
+        if (k > 0) text.append(piece, k);
+        b.n_tokens = 1;
+        b.token[0] = t; b.pos[0] = n_past++; b.n_seq_id[0] = 1; b.seq_id[0][0] = 0; b.logits[0] = 1;
+        if (llama_decode(a->ctx, b) != 0) { llama_batch_free(b); return -3; }
+    }
+    llama_batch_free(b);
+
+    if (!forced) {  // auto-detect: "language Chinese<asr_text>…"
+        size_t p = text.find("<asr_text>");
+        if (p != std::string::npos) text = text.substr(p + 10);
+    }
+    int len = (int) std::min(text.size(), (size_t) (out_cap - 1));
+    memcpy(out, text.data(), len);
+    out[len] = 0;
+    return len;
+}
+
+// ----------------------------------------------------------------------------- LLM
+
+struct cz_llm {
+    llama_model * model = nullptr;
+    llama_context * ctx = nullptr;
+    llama_sampler * smpl = nullptr;
+    int n_slots = 0;     // prefix sequences 0..n_slots-1; working sequence = n_slots
+    int work = 0;        // working sequence id
+    bool has_logits = false;
+};
+
+CZ_API void cz_llm_free(cz_llm * m) {
+    if (!m) return;
+    if (m->smpl) llama_sampler_free(m->smpl);
+    if (m->ctx) llama_free(m->ctx);
+    if (m->model) llama_model_free(m->model);
+    delete m;
+}
+
+CZ_API cz_llm * cz_llm_load(const char * model_path, int n_ctx, int n_slots) {
+    auto * m = new cz_llm();
+    m->n_slots = n_slots;
+    m->work = n_slots;
+    m->model = load_model(model_path);
+    if (!m->model) { cz_llm_free(m); return nullptr; }
+    m->ctx = make_ctx(m->model, n_ctx, n_slots + 1, 512);
+    if (!m->ctx) { cz_llm_free(m); return nullptr; }
+    m->smpl = llama_sampler_init_greedy();
+    return m;
+}
+
+CZ_API int cz_llm_n_tokens(cz_llm * m, const char * text, int special) {
+    return (int) tokenize(llama_model_get_vocab(m->model), text, special != 0).size();
+}
+
+// (Re)fill a prefix slot with `text` (chat template rendered by the caller; special tokens parsed).
+CZ_API int cz_llm_set_prefix(cz_llm * m, int slot, const char * text) {
+    if (slot < 0 || slot >= m->n_slots) return -1;
+    llama_memory_t mem = llama_get_memory(m->ctx);
+    llama_memory_seq_rm(mem, m->work, -1, -1);  // the working copy may share its cells
+    llama_memory_seq_rm(mem, slot, -1, -1);
+    auto toks = tokenize(llama_model_get_vocab(m->model), text, true);
+    if (decode_seq(m->ctx, toks, slot, 0, false) != 0) return -2;
+    m->has_logits = false;
+    return (int) toks.size();
+}
+
+// Start a new working sequence as a copy of a prefix slot.
+CZ_API int cz_llm_begin(cz_llm * m, int slot) {
+    if (slot < 0 || slot >= m->n_slots) return -1;
+    llama_memory_t mem = llama_get_memory(m->ctx);
+    llama_memory_seq_rm(mem, m->work, -1, -1);
+    llama_memory_seq_cp(mem, slot, m->work, -1, -1);
+    llama_sampler_reset(m->smpl);
+    m->has_logits = false;
+    return 0;
+}
+
+// Append text to the working sequence. Returns number of tokens fed or < 0.
+CZ_API int cz_llm_feed(cz_llm * m, const char * text, int special) {
+    auto toks = tokenize(llama_model_get_vocab(m->model), text, special != 0);
+    if (toks.empty()) return 0;
+    if (decode_seq(m->ctx, toks, m->work, next_pos(m->ctx, m->work), true) != 0) return -2;
+    m->has_logits = true;
+    return (int) toks.size();
+}
+
+// Raw bytes of each generated token (may split UTF-8 sequences). Return non-zero to stop.
+typedef int (*cz_piece_cb)(const char * bytes, int len, void * user);
+
+CZ_API int cz_llm_generate(cz_llm * m, int max_tokens, cz_piece_cb cb, void * user) {
+    if (!m->has_logits) return -1;
+    const llama_vocab * vocab = llama_model_get_vocab(m->model);
+    const llama_seq_id seq = m->work;
+    llama_pos pos = next_pos(m->ctx, seq);
+    llama_batch b = llama_batch_init(1, 0, 1);
+    char piece[256];
+    int n = 0;
+    const bool prof = getenv("CZ_PROFILE") != nullptr;
+    int64_t t_sample = 0, t_decode = 0;
+    for (; n < max_tokens; n++) {
+        int64_t t0 = ggml_time_us();
+        llama_token t = llama_sampler_sample(m->smpl, m->ctx, -1);
+        t_sample += ggml_time_us() - t0;
+        if (llama_vocab_is_eog(vocab, t)) break;
+        int k = llama_token_to_piece(vocab, t, piece, sizeof(piece), 0, false);
+        if (k > 0 && cb && cb(piece, k, user)) { n++; break; }
+        b.n_tokens = 1;
+        b.token[0] = t; b.pos[0] = pos++; b.n_seq_id[0] = 1; b.seq_id[0][0] = seq; b.logits[0] = 1;
+        t0 = ggml_time_us();
+        if (llama_decode(m->ctx, b) != 0) { llama_batch_free(b); return -3; }
+        if (prof) llama_synchronize(m->ctx);
+        t_decode += ggml_time_us() - t0;
+    }
+    if (prof) llama_perf_context_print(m->ctx);
+    if (prof && n) fprintf(stderr, "gen %d tok: sample %.2f ms/tok, decode %.2f ms/tok\n", n, t_sample / 1e3 / n, t_decode / 1e3 / n);
+    llama_batch_free(b);
+    m->has_logits = false;
+    return n;
+}
+
+// Drop the working sequence (cancel / done) so its cells are free for the next one.
+CZ_API void cz_llm_end(cz_llm * m) {
+    llama_memory_seq_rm(llama_get_memory(m->ctx), m->work, -1, -1);
+    m->has_logits = false;
+}
+
+// 16 kHz resampler for microphone input (wraps mtmd's).
+CZ_API void * cz_resampler_new(int rate_in, int rate_out) {
+    return mtmd_helper_resampler_init(rate_in, rate_out);
+}
+CZ_API void cz_resampler_free(void * r) { mtmd_helper_resampler_free((mtmd_helper_resampler *) r); }
+CZ_API long long cz_resampler_process(void * r, const float * in, size_t n, const float ** out) {
+    return mtmd_helper_resampler_process((mtmd_helper_resampler *) r, in, n, out);
+}

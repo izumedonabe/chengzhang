@@ -1,0 +1,9 @@
+[package]
+name = "cz-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "成章 engine: VAD segmentation, incremental ASR -> LLM pipeline, prompts. Platform independent."
+
+[dependencies]
+earshot = "1.2"

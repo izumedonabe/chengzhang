@@ -63,7 +63,7 @@ TRANSFORMERS_KEEP = {
 # mlx-audio is a toolkit (TTS, music, speech-to-speech, ~40 ASR models); we use
 # Qwen3-ASR and Silero VAD
 MLX_AUDIO_DROP = ("tts", "sts", "music", "codec", "lid", "tests", "server.py", "server_inference.py", "convert.py")
-STT_KEEP = {"qwen3_asr", "qwen2_audio", "__init__.py", "base.py"}
+STT_KEEP = {"qwen3_asr", "qwen2_audio", "phonon", "__init__.py", "base.py"}  # stt/utils.py imports phonon.transport unconditionally
 VAD_KEEP = {"silero_vad", "__init__.py"}
 STDLIB_DROP = ("idlelib", "tkinter", "turtledemo", "ensurepip", "lib2to3", "pydoc_data", "test", "unittest/test")
 
@@ -96,6 +96,10 @@ def slim(site: Path, pyhome: Path):
     for p in (ma / "vad" / "models").iterdir():
         if p.name not in VAD_KEEP:
             _rm(p)
+    # these package inits eagerly import every model; keep only the survivors
+    for pkg in (ma / "stt" / "models", ma / "vad" / "models"):
+        mods = sorted(p.name for p in pkg.iterdir() if p.is_dir() and (p / "__init__.py").exists())
+        (pkg / "__init__.py").write_text(f"from . import {', '.join(mods)}\n" if mods else "")
     _rm(site / "mlx" / "include")  # C++ headers for building extensions
     _rm(site / "mlx" / "share")    # CMake files
     stdlib = pyhome / "lib" / f"python{PY_VERSION}"

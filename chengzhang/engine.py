@@ -291,7 +291,8 @@ class Polisher:
 
 
 class Engine(threading.Thread):
-    """Commands: ("start",) ("audio", ndarray) ("end", t_release) ("flush",) ("quit",)
+    """Commands: ("start",) ("audio", ndarray) ("end", t_release) ("flush",)
+    ("unload", "llm"|"all") ("reload",) ("quit",)
     Events via on_event(kind, payload): "ready", "segment", "capture_done", "raw",
     "text", "done", "error".
 
@@ -328,26 +329,53 @@ class Engine(threading.Thread):
         t = time.perf_counter()
         self.on_event("loading", {"stage": "vad", "progress": 0.05})
         self.vad = load_vad(self.cfg.vad_model)
-        self.on_event("loading", {"stage": "asr", "progress": 0.15})
-        self.asr = Transcriber(self.cfg)
-        self.polisher = None
-        if self.cfg.polish:
-            self.on_event("loading", {"stage": "llm", "progress": 0.45})
-            self.polisher = Polisher(self.cfg, modes=self._modes())
-        load_s = time.perf_counter() - t
-        self.on_event("loading", {"stage": "warmup", "progress": 0.85})
-        # warmup: compile Metal kernels so the first real utterance is fast
-        t = time.perf_counter()
+        self.asr = self.polisher = None
+        self._load_models(t)
+
+    def _load_models(self, t0, reload=False):
+        """Load whatever isn't in memory yet (ASR and/or LLM), then warm up."""
         noise = (np.random.default_rng(0).standard_normal(SR * 2) * 0.01).astype(np.float32)
-        self.asr(noise)
-        seg = Segmenter(self.vad, self.cfg)
-        seg.push(noise)
-        if self.polisher:
+        if self.asr is None:
+            self.on_event("loading", {"stage": "asr", "progress": 0.15, "reload": reload})
+            self.asr = Transcriber(self.cfg)
+            self.asr(noise)  # compile Metal kernels so the first real utterance is fast
+        if self.polisher is None and self.cfg.polish:
+            self.on_event("loading", {"stage": "llm", "progress": 0.45, "reload": reload})
+            self.polisher = Polisher(self.cfg, modes=self._modes())
+            self.on_event("loading", {"stage": "warmup", "progress": 0.85, "reload": reload})
             self.polisher("嗯那个我们明天开会吧")
-        self.seg = Segmenter(self.vad, self.cfg)
-        self.on_event("ready", {"load_s": load_s, "warmup_s": time.perf_counter() - t})
+        if not reload:
+            Segmenter(self.vad, self.cfg).push(noise)
+            self.seg = Segmenter(self.vad, self.cfg)
+        self.on_event("ready", {"load_s": time.perf_counter() - t0, "reload": reload,
+                                "memory_gb": mx.get_active_memory() / 1e9})
+
+    def _on_unload(self, what="llm"):
+        """Free model weights (and the cached prompt) to give memory back to the
+        system. VAD stays: it's tiny. ("reload",) brings them back."""
+        if getattr(self, "active", False):
+            return  # never in the middle of an utterance
+        before = mx.get_active_memory()
+        self.polisher = None
+        if what == "all":
+            self.asr = None
+        import gc
+
+        gc.collect()
+        mx.clear_cache()
+        self.on_event("unloaded", {"what": what, "freed_gb": (before - mx.get_active_memory()) / 1e9,
+                                   "memory_gb": mx.get_active_memory() / 1e9})
+
+    def _on_reload(self):
+        if self.asr is not None and (self.polisher is not None or not self.cfg.polish):
+            self.on_event("ready", {"load_s": 0.0, "reload": True,
+                                    "memory_gb": mx.get_active_memory() / 1e9})
+            return
+        self._load_models(time.perf_counter(), reload=True)
 
     def _on_start(self, mode="default"):
+        if self.asr is None:  # caller should have sent ("reload",) first; be safe
+            self._load_models(time.perf_counter(), reload=True)
         self.mode = self.cfg.translate if mode == "default" else mode
         if self.polisher and self.mode not in self.polisher.modes:
             self.mode = None  # e.g. translate requested but the model can't translate

@@ -108,7 +108,8 @@ def main():
             p = Path(root) / name
             if p.suffix in (".so", ".dylib") or (p.parent.name == "bin" and os.access(p, os.X_OK) and not p.is_symlink()):
                 subprocess.run(["codesign", "--force", "--sign", "-", str(p)], capture_output=True)
-    run("codesign", "--force", "--sign", "-", APP)
+    # identifier-based requirement: permissions survive updates (see build_app.py)
+    run("codesign", "--force", "--sign", "-", "--requirements", '=designated => identifier "app.chengzhang.dictation"', APP)
 
     # DMG: the app next to a shortcut to /Applications
     stage = BUILD / "dmg"

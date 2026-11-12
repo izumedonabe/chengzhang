@@ -28,6 +28,10 @@ DEFAULT_SETTINGS = {
     "mic": "auto",  # "auto" = built-in mic first; or a device name
     "keep_mic_open": False,
     "save_audio": False,
+    # free model memory after this many idle minutes: 0 = never.
+    # "unload_what": "llm" keeps speech recognition loaded (first words still instant)
+    "unload_after_min": 0,
+    "unload_what": "llm",
 }
 
 TYPING_CPM = 50  # rough Chinese typing speed, for "time saved"

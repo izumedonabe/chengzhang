@@ -57,8 +57,11 @@ def main():
     with open(APP / "Contents" / "Info.plist", "wb") as f:
         plistlib.dump(info, f)
 
-    # ad-hoc signature: lets macOS attach microphone / accessibility permissions to the bundle
-    subprocess.run(["codesign", "--force", "--deep", "--sign", "-", str(APP)], check=True)
+    # ad-hoc signature with an identifier-based designated requirement. Plain ad-hoc
+    # signing pins permissions (Accessibility, Microphone) to this exact binary's hash,
+    # so every rebuild silently orphans them; pinning to the bundle id keeps them.
+    subprocess.run(["codesign", "--force", "--deep", "--sign", "-",
+                    "--requirements", '=designated => identifier "app.chengzhang.dictation"', str(APP)], check=True)
     print("built", APP)
 
 

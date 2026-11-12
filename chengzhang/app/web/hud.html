@@ -84,13 +84,14 @@
 
   window.hudState = ({ state: s, payload: p }) => {
     state = s;
-    body.className = s === "hidden" ? "idle" : s === "thinking" ? "thinking on" : s === "loading" || s === "empty" || s === "error" ? "idle on" : "on";
+    body.className = s === "hidden" ? "idle" : s === "thinking" ? "thinking on" : s === "loading" || s === "waking" || s === "empty" || s === "error" ? "idle on" : "on";
     if (s === "listening") { setText(p && p.mode ? `在听，译成${p.mode}` : "在听", (p && p.hint) || "松开结束，esc 放弃"); lvl = 0; }
     else if (s === "partial") { if (sub) sub.textContent = tail(p || ""); body.className = "on"; state = "listening"; }
     else if (s === "thinking") setText("整理中", p && p.mode ? `译成${p.mode}` : "");
     else if (s === "done") setText("已输入", tail((p && p.text) || "", 22), p && p.done_s != null ? `${p.done_s.toFixed(2)} 秒` : "");
     else if (s === "copied") setText("已复制，按 ⌘V 粘贴", p && p.auto ? "打开辅助功能权限后可以自动粘贴" : tail((p && p.text) || "", 22));
     else if (s === "empty") setText("没有听到声音", "检查麦克风，或说得再靠近一点");
+    else if (s === "waking") setText("正在唤醒模型", "几秒后再按一次");
     else if (s === "loading") setText("模型还在加载", p && p.progress != null ? `${Math.round(p.progress * 100)}%，日出前稍等一下` : "稍等一下");
     else if (s === "error") setText("没能完成", p || "");
   };

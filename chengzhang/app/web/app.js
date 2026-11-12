@@ -285,6 +285,7 @@ function mockApi() {
 /* ======================================================================= status */
 
 const STAGE_TEXT = { vad: "正在加载声音检测", asr: "正在加载语音识别", llm: "正在加载文字整理", warmup: "正在预热", download: "第一次使用，正在下载模型" };
+const WAKE_TEXT = { asr: "正在唤醒语音识别", llm: "正在唤醒文字整理", warmup: "正在唤醒文字整理" };
 
 function renderStatus(st) {
   STATE.status = st;
@@ -299,6 +300,13 @@ function renderStatus(st) {
     el.classList.add("error");
     el.textContent = st.error || "模型加载失败";
     setSun(0.05);
+  } else if (st.state === "asleep") {
+    // models freed: the sun sits low over the water until the next utterance
+    el.textContent = st.stage === "all" ? "已释放模型，按快捷键唤醒" : "已释放文字整理，说话时自动唤醒";
+    setSun(st.stage === "all" ? 0.12 : 0.45);
+  } else if (st.state === "waking") {
+    el.textContent = WAKE_TEXT[st.stage] || "正在唤醒";
+    setSun(0.7);
   } else if (st.state === "loading" || st.state === "downloading") {
     el.innerHTML = "";
     el.textContent = `${STAGE_TEXT[st.stage] || "正在加载"}  ${pct}%`;
@@ -308,6 +316,7 @@ function renderStatus(st) {
     setSun(0);
   }
   if ($("#page-models:not([hidden])")) loadModels();
+  if ($("#page-settings:not([hidden])")) renderMemory();
 }
 
 function renderLabels() {
@@ -558,8 +567,32 @@ function renderSettings() {
   $("#set-fast").checked = s.fast_path;
   $("#set-keepmic").checked = !!s.keep_mic_open;
   $("#set-saveaudio").checked = !!s.save_audio;
+  $("#set-unload-after").value = String(s.unload_after_min || 0);
+  seg($("#set-unload-what"), [["llm", "只释放文字整理"], ["all", "全部"]], s.unload_what || "llm",
+    (v) => setSetting("unload_what", v).then(renderMemory));
+  renderMemory();
   renderMics();
   $("#set-paste").checked = s.auto_paste;
+}
+
+function renderMemory() {
+  const s = STATE.settings, st = STATE.status;
+  const what = s.unload_what || "llm";
+  $("#unload-what-note").textContent = what === "llm"
+    ? "语音识别留在内存里，说话立刻开始；文字整理在你说话时唤醒，约 3 秒"
+    : "最省内存；唤醒要 3–7 秒，这期间不能说话";
+  $("#set-unload-what").closest(".setting").hidden = !+s.unload_after_min && st.state !== "asleep";
+  const btn = $("#mem-action"), now = $("#mem-now");
+  if (st.state === "asleep") {
+    now.textContent = what === "all" || st.stage === "all" ? "模型已释放" : "文字整理已释放";
+    btn.textContent = "唤醒"; btn.disabled = false; btn.dataset.act = "wake";
+  } else if (st.state === "ready") {
+    now.textContent = st.memory_gb ? `模型占用约 ${fmt(st.memory_gb, 1)} GB` : "模型已加载";
+    btn.textContent = "立即释放"; btn.disabled = false; btn.dataset.act = "unload";
+  } else {
+    now.textContent = st.state === "waking" ? "正在唤醒" : "正在加载";
+    btn.textContent = "立即释放"; btn.disabled = true; btn.dataset.act = "";
+  }
 }
 
 async function renderMics() {
@@ -723,6 +756,15 @@ function wire() {
   $("#set-mic").addEventListener("change", async (e) => { await setSetting("mic", e.target.value, "麦克风已切换"); renderMics(); });
   $("#set-keepmic").addEventListener("change", (e) => setSetting("keep_mic_open", e.target.checked));
   $("#set-saveaudio").addEventListener("change", (e) => setSetting("save_audio", e.target.checked));
+  $("#set-unload-after").addEventListener("change", async (e) => {
+    await setSetting("unload_after_min", +e.target.value, +e.target.value ? `闲置 ${e.target.selectedOptions[0].text}后释放` : "不自动释放");
+    renderMemory();
+  });
+  $("#mem-action").addEventListener("click", async (e) => {
+    const act = e.currentTarget.dataset.act;
+    if (act === "unload") { await api.unload_models(STATE.settings.unload_what || "llm"); toast("正在释放"); }
+    else if (act === "wake") { await api.wake_models(); toast("正在唤醒"); }
+  });
 
   if (window.pywebview && window.pywebview.api) start(window.pywebview.api);
   else {

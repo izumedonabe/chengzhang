@@ -143,6 +143,7 @@ class Mic:
 
 class Controller:
     def __init__(self, store: Store):
+        self._rec_evt = threading.Event()
         self.store = store
         self.main_win = None
         self.hud_win = None
@@ -155,6 +156,9 @@ class Controller:
         self.recording = False
         self.session = {}
         self._capture_timer = None
+        self._hud_gen = 0
+        self.loaded = {"asr": False, "llm": False}  # what's in memory right now
+        self.last_used = time.monotonic()
         # pywebview's evaluate_js blocks until the main thread runs the JS, so it
         # must never be called on the main thread (hotkey callbacks run there).
         # All JS pushes go through this thread; hotkey work goes through _work.
@@ -186,6 +190,8 @@ class Controller:
         self._emit(self.main_win, "otlEmit", {"kind": kind, "payload": payload})
 
     def hud(self, state, payload=None):
+        if state != "hidden":
+            self._hud_gen += 1
         self._emit(self.hud_win, "hudState", {"state": state, "payload": payload})
         if self.hud_win is None or self.hud_win.native is None:
             return
@@ -193,6 +199,16 @@ class Controller:
             AppHelper.callAfter(macos.hide_window, self.hud_win.native)
         else:
             AppHelper.callAfter(macos.show_without_focus, self.hud_win.native)
+
+    def _hide_hud_later(self, delay):
+        """Hide the HUD after `delay` s — unless something newer was shown since
+        (a stale timer from the last dictation must not hide the next one)."""
+        gen = self._hud_gen
+
+        def hide():
+            if gen == self._hud_gen:
+                self.hud("hidden")
+        threading.Timer(delay, hide).start()
 
     def _set_status(self, **kw):
         self.status.update(kw)
@@ -210,6 +226,8 @@ class Controller:
         AppHelper.callAfter(self._style_main_window)
         self._place_hud()
         threading.Thread(target=self._level_ticker, daemon=True).start()
+        threading.Thread(target=self._idle_watch, daemon=True, name="otl-idle").start()
+        threading.Thread(target=self._accessibility_watch, daemon=True, name="otl-ax").start()
         self.configure_mic()
         self.load_engine()
 
@@ -312,9 +330,23 @@ class Controller:
         if eng is not self.engine:
             return  # events from an engine we already replaced
         if kind == "loading":
-            self._set_status(state="loading", **payload)
+            reload = payload.pop("reload", False)
+            if reload:
+                self._set_status(state="waking", **payload)
+            else:
+                self._set_status(state="loading", **payload)
         elif kind == "ready":
-            self._set_status(state="ready", stage=None, progress=1.0)
+            self.loaded = {"asr": True, "llm": bool(self.cfg and self.cfg.polish)}
+            self.last_used = time.monotonic()
+            self._set_status(state="ready", stage=None, progress=1.0,
+                             memory_gb=round(payload.get("memory_gb", 0), 1))
+        elif kind == "unloaded":
+            what = payload["what"]
+            self.loaded = {"asr": what != "all", "llm": False}
+            print(f"[otl] unloaded {what}: freed {payload['freed_gb']:.1f} GB, "
+                  f"now {payload['memory_gb']:.1f} GB", flush=True)
+            self._set_status(state="asleep", stage=what, progress=0.0,
+                             memory_gb=round(payload["memory_gb"], 1))
         elif kind == "error":
             msg = f"{type(payload).__name__}: {payload}"
             traceback.print_exception(payload)
@@ -322,7 +354,7 @@ class Controller:
                 self._set_status(state="error", error=msg)
             else:
                 self.hud("error", "出错了：" + msg[:60])
-                threading.Timer(2.0, lambda: self.hud("hidden")).start()
+                self._hide_hud_later(2.0)
             self._stop_capture()
         elif kind == "capture_done":
             self._stop_capture()
@@ -337,7 +369,7 @@ class Controller:
         text = r["text"]
         if not text:
             self.hud("empty")
-            threading.Timer(1.2, lambda: self.hud("hidden")).start()
+            self._hide_hud_later(1.2)
             return
         pasted = False
         if self.store.settings()["auto_paste"]:
@@ -363,10 +395,10 @@ class Controller:
             self.store.save_audio(entry["id"], audio)
         if pasted:
             self.hud("done", {"text": text, "done_s": r["release_to_done_s"]})
-            threading.Timer(0.9, lambda: self.hud("hidden")).start()
+            self._hide_hud_later(0.9)
         else:
             self.hud("copied", {"text": text, "auto": self.store.settings()["auto_paste"]})
-            threading.Timer(2.6, lambda: self.hud("hidden")).start()
+            self._hide_hud_later(2.6)
         self.ui("entry", entry)
         self.ui("stats", self.store.stats())
 
@@ -376,8 +408,19 @@ class Controller:
         if self.engine:
             self.engine.send("audio", x)
 
+    # `recording` is a property so the level ticker can sleep on an Event instead
+    # of polling: between dictations it causes no wakeups at all.
+    @property
+    def recording(self):
+        return self._rec_evt.is_set()
+
+    @recording.setter
+    def recording(self, on):
+        self._rec_evt.set() if on else self._rec_evt.clear()
+
     def _level_ticker(self):
         while True:
+            self._rec_evt.wait()  # blocks (no wakeups) until a dictation starts
             time.sleep(0.04)
             if self.recording and self._js.qsize() < 3:  # drop levels rather than lag
                 self._emit(self.hud_win, "hudLevel", self.mic.level)
@@ -386,10 +429,21 @@ class Controller:
         if self.store.settings().get("hotkey_mode") == "toggle" and self.recording:
             self._stop_recording()
             return
-        if self.status["state"] != "ready" or not self.engine:
+        if self.status["state"] in ("asleep", "waking") and self.engine:
+            # wake up. If speech recognition is still loaded, start listening right
+            # away — the LLM comes back while the user talks (≈3 s).
+            if self.status["state"] == "asleep":
+                self.engine.send("reload")
+                self._set_status(state="waking", stage="llm" if self.loaded["asr"] else "asr", progress=0.0)
+            if not self.loaded["asr"]:
+                self.hud("waking", self.status)
+                self._hide_hud_later(1.6)
+                return
+        elif self.status["state"] != "ready" or not self.engine:
             self.hud("loading", self.status)
-            threading.Timer(1.2, lambda: self.hud("hidden")).start()
+            self._hide_hud_later(1.2)
             return
+        self.last_used = time.monotonic()
         if self.recording or self.mic.capturing:
             return
         s = self.store.settings()
@@ -402,7 +456,7 @@ class Controller:
         except Exception as e:
             self.engine.send("cancel")
             self.hud("error", f"无法打开麦克风：{e}")
-            threading.Timer(2.0, lambda: self.hud("hidden")).start()
+            self._hide_hud_later(2.0)
             return
         self.recording = True
         if self.ptt:
@@ -418,6 +472,7 @@ class Controller:
     def _stop_recording(self):
         if not self.recording:
             return
+        self.last_used = time.monotonic()
         if self.ptt:
             self.ptt.active = False
         self.recording = False
@@ -447,6 +502,43 @@ class Controller:
             self._capture_timer.cancel()
             self._capture_timer = None
         self.mic.stop()
+
+    def _accessibility_watch(self):
+        """Permission is usually granted while we're running. Notice it, then
+        rebuild the hotkey tap (a tap can only be created once we're trusted)
+        and drop the banner — no restart needed."""
+        trusted = macos.accessibility_trusted(False)
+        while True:
+            time.sleep(1.5)
+            now = macos.accessibility_trusted(False)
+            if now != trusted:
+                trusted = now
+                print(f"[otl] accessibility -> {now}", flush=True)
+                AppHelper.callAfter(self._install_hotkey)
+                self.ui("accessibility", now)
+
+    # ------------------------------------------------------------------ memory
+
+    def _idle_watch(self):
+        """Unload models after the configured idle time. Checked every 15 s."""
+        while True:
+            time.sleep(15)
+            s = self.store.settings()
+            mins = float(s.get("unload_after_min") or 0)
+            if (mins <= 0 or not self.engine or self.recording or self.mic.capturing
+                    or self.status["state"] != "ready"):
+                continue
+            if time.monotonic() - self.last_used >= mins * 60:
+                self.unload(s.get("unload_what", "llm"))
+
+    def unload(self, what="llm"):
+        if self.engine and not self.recording and self.status["state"] == "ready":
+            self.engine.send("unload", what)
+
+    def wake(self):
+        if self.engine and self.status["state"] == "asleep":
+            self.engine.send("reload")
+            self._set_status(state="waking", stage="llm" if self.loaded["asr"] else "asr", progress=0.0)
 
     # ------------------------------------------------------------------ queries / commands
 
@@ -500,6 +592,14 @@ class Api:
 
     def models(self):
         return self._c.catalog()
+
+    def unload_models(self, what="llm"):
+        self._c.unload(what)
+        return True
+
+    def wake_models(self):
+        self._c.wake()
+        return True
 
     def set_hotkey(self, spec):
         spec = macos.normalize_hotkey(spec)

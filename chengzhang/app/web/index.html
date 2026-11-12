@@ -212,6 +212,25 @@
         <label class="switch"><input type="checkbox" id="set-saveaudio"><span></span></label>
       </div>
     </div>
+
+    <h2 class="group">内存</h2>
+    <div class="settings">
+      <div class="setting">
+        <div><h3>闲置后释放模型</h3><p id="unload-note">释放后，下次说话会多等几秒</p></div>
+        <select id="set-unload-after" aria-label="闲置多久后释放">
+          <option value="0">从不</option><option value="5">5 分钟</option><option value="15">15 分钟</option>
+          <option value="30">30 分钟</option><option value="60">1 小时</option>
+        </select>
+      </div>
+      <div class="setting">
+        <div><h3>释放哪些</h3><p id="unload-what-note"></p></div>
+        <div class="seg" id="set-unload-what" role="radiogroup" aria-label="释放哪些模型"></div>
+      </div>
+      <div class="setting">
+        <div><h3>现在</h3><p id="mem-now"></p></div>
+        <button class="btn quiet" id="mem-action" type="button"></button>
+      </div>
+    </div>
   </section>
 </main>
 

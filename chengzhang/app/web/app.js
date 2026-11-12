@@ -248,7 +248,10 @@ function mockApi() {
   const stages = [["vad", 0.05], ["asr", 0.15], ["llm", 0.45], ["warmup", 0.85]];
   stages.forEach(([s, p], i) => setTimeout(() => { Object.assign(status, { stage: s, progress: p }); otlEmit({ kind: "status", payload: { ...status } }); }, 500 + i * 900));
   setTimeout(() => { Object.assign(status, { state: "ready", stage: null, progress: 1 }); otlEmit({ kind: "status", payload: { ...status } }); }, 4300);
-  const stats = () => ({ today: { count: 3, chars: 1240, audio_min: 9.2, cpm: 134, avg_done_s: 0.42, saved_min: 15.6 }, week: {}, all: {} });
+  const stats = () => ({
+    today: { count: 3, chars: 1240, audio_min: 9.2, cpm: 134, avg_done_s: 0.42, saved_min: 15.6 },
+    week: { count: 21, chars: 3512, audio_min: 37.4, cpm: 141, avg_done_s: 0.45, saved_min: 32.8 },
+    all: { count: 64, chars: 9860, audio_min: 71.0, cpm: 139, avg_done_s: 0.46, saved_min: 126.2 } });
   const catalog = () => ({
     asr: [
       { id: "mlx-community/Qwen3-ASR-0.6B-8bit", name: "Qwen3-ASR 0.6B", blurb: "反应快，日常口述足够准。", facts: { "大小": "1.0 GB", "内存": "约 2 GB" }, size_gb: 1.01, recommended: true, downloaded: true },
@@ -324,11 +327,32 @@ function renderLabels() {
   $$(".tl").forEach((k) => (k.textContent = STATE.settings.translate_lang || "英文"));
 }
 
+let tallyRange = localStorage.getItem("tally-range") || "all";
+
+// minutes -> [number, unit] pairs, e.g. 94 -> [[1,"小时"],[34,"分"]]
+function duration(min) {
+  min = Math.round(min || 0);
+  if (min < 60) return [[min, "分钟"]];
+  const hrs = Math.floor(min / 60), rest = min % 60;
+  return rest ? [[hrs, "小时"], [rest, "分"]] : [[hrs, "小时"]];
+}
+function figure(el, parts) {
+  el.innerHTML = "";
+  for (const [n, unit] of parts) el.append(h("span", { class: "n" }, n), h("span", { class: "u" }, unit));
+}
+
 function renderLedger(stats) {
   STATE.stats = stats;
-  const el = $("#ledger");
-  const t = stats.today;
-  el.textContent = t && t.count ? `今天 ${fmt(t.chars)} 字` : "";
+  const any = stats.all && stats.all.count;
+  $("#tally").hidden = !any;
+  if (!any) return;
+  $$(".tally-range button").forEach((b) => b.setAttribute("aria-selected", b.dataset.range === tallyRange ? "true" : "false"));
+  const t = stats[tallyRange] || {};
+  const k = t.chars >= 10000 ? [fmt(t.chars / 10000, 1), "万字"] : [fmt(t.chars || 0), "字"];
+  figure($("#t-time"), t.count ? duration(t.audio_min) : [["—", ""]]);
+  figure($("#t-chars"), t.count ? [k] : [["—", ""]]);
+  figure($("#t-cpm"), t.count && t.cpm ? [[fmt(t.cpm), "字"]] : [["—", ""]]);
+  figure($("#t-saved"), t.count ? duration(t.saved_min) : [["—", ""]]);
 }
 
 /* ======================================================================= entries */
@@ -704,6 +728,11 @@ function applyTheme({ instant = false } = {}) {
 darkQuery.addEventListener("change", () => applyTheme());
 
 function wire() {
+  $$(".tally-range button").forEach((b) => b.addEventListener("click", () => {
+    tallyRange = b.dataset.range;
+    localStorage.setItem("tally-range", tallyRange);
+    renderLedger(STATE.stats);
+  }));
   paint();
   setSun(0, { instant: true });
   frame('home', { instant: true });

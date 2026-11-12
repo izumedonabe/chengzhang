@@ -450,4 +450,29 @@ html.theming .vista:not(.night) .sun, html.theming .vista:not(.night) .glow { tr
 .presets button[aria-pressed="true"] { color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
 #hotkey-note.warn { color: #A2412A; }
 @media (prefers-reduced-motion: reduce) { .hotkey.recording .hotkey-now { animation: none; } }
+
 .setting[hidden] { display: none; }
+
+/* ------------------------------------------------------------------ home: tally (the painting's caption) */
+
+.tally { position: relative; margin: 40px var(--gutter) 0; max-width: 764px; }
+.tally[hidden] { display: none; }
+.tally-range { position: absolute; right: 0; top: -26px; display: flex; gap: 14px; }
+.tally-range button {
+  font: 12px/1 var(--sans); color: var(--faint); background: none; border: 0; padding: 4px 0; cursor: pointer;
+  transition: color 0.2s;
+}
+.tally-range button:hover { color: var(--muted); }
+.tally-range button[aria-selected="true"] { color: var(--ink); }
+.tally-row {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0;
+  border-top: 1px solid var(--line); padding-top: 18px;
+}
+.tally-row > div { display: flex; flex-direction: column-reverse; gap: 6px; }
+.tally dt { font-size: 12px; color: var(--muted); }
+.tally dd { margin: 0; color: var(--ink); white-space: nowrap; }
+.tally .n { font: 200 30px/1 var(--sans); letter-spacing: -0.01em; font-variant-numeric: tabular-nums lining-nums; }
+.tally .u { font-size: 12px; color: var(--muted); margin: 0 6px 0 3px; }
+.tally .u:last-child { margin-right: 0; }
+.tally + .recent { margin-top: 44px; }
+@media (max-width: 720px) { .tally-row { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 18px; } }

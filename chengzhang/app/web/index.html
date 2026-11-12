@@ -100,8 +100,23 @@
       <button class="btn" id="ax-open">打开设置</button>
     </div>
 
+    <!-- the painting's caption: a few quiet numbers, like the label beside a canvas -->
+    <section class="tally" id="tally" aria-label="统计" hidden>
+      <div class="tally-range" role="tablist" aria-label="统计范围">
+        <button type="button" role="tab" data-range="today">今天</button>
+        <button type="button" role="tab" data-range="week">本周</button>
+        <button type="button" role="tab" data-range="all">全部</button>
+      </div>
+      <dl class="tally-row">
+        <div><dt>口述</dt><dd id="t-time"></dd></div>
+        <div><dt>写下</dt><dd id="t-chars"></dd></div>
+        <div><dt>每分钟</dt><dd id="t-cpm"></dd></div>
+        <div><dt>比打字省下</dt><dd id="t-saved"></dd></div>
+      </dl>
+    </section>
+
     <div class="recent">
-      <div class="section-head"><h2>最近</h2><span class="today" id="ledger"></span></div>
+      <div class="section-head"><h2>最近</h2></div>
       <ol class="entries" id="recent-list"></ol>
       <a href="#history" class="more" id="recent-more" hidden>全部记录</a>
     </div>

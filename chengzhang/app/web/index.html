@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>成章</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<!-- the painting lives once, here; every page shows a different crop of it via <use> -->
+<svg class="sprite" id="sprite" width="0" height="0" aria-hidden="true" focusable="false">
+  <defs>
+          <filter id="brush" x="-5%" y="-20%" width="110%" height="140%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.008 0.09" numOctaves="3" seed="7" result="n"/>
+            <feDisplacementMap in="SourceGraphic" in2="n" scale="16" xChannelSelector="R" yChannelSelector="G"/>
+          </filter>
+          <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="6"/>
+          </filter>
+          <clipPath id="above"><rect width="1200" height="263"/></clipPath>
+          <filter id="mist-blur" x="-10%" y="-30%" width="120%" height="160%"><feGaussianBlur stdDeviation="3.2"/></filter>
+          <filter id="grain">
+            <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3"/>
+            <feColorMatrix values="0 0 0 0 0.1  0 0 0 0 0.15  0 0 0 0 0.18  0 0 0 0.09 0"/>
+          </filter>
+          <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#7E949D"/>
+            <stop offset="0.45" stop-color="#A3B2B1"/>
+            <stop offset="0.78" stop-color="#C4B8AA"/>
+            <stop offset="1" stop-color="#A2B1AE"/>
+          </linearGradient>
+          <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#93A8AA"/>
+            <stop offset="1" stop-color="#5A7580"/>
+          </linearGradient>
+          <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+            <stop offset="0" stop-color="#F3A57E" stop-opacity="0.7"/>
+            <stop offset="0.5" stop-color="#E9B49A" stop-opacity="0.25"/>
+            <stop offset="1" stop-color="#E9B49A" stop-opacity="0"/>
+          </radialGradient>
+            <g id="scene">
+        <rect id="sky-base" width="1200" height="440" fill="url(#sky)"/>
+        <g id="sky-strokes" filter="url(#brush)" opacity="0.55"></g>
+        <g id="far-harbor" filter="url(#mist-blur)" opacity="0.42"></g>
+        <rect id="sea-base" y="262" width="1200" height="178" fill="url(#sea)"/>
+        <g id="sea-strokes" filter="url(#brush)"></g>
+        <g id="reflection" filter="url(#brush)"></g>
+        <g id="boats" filter="url(#brush)"></g>
+        <rect id="grain-layer" width="1200" height="440" filter="url(#grain)"/>
+          </g>
+  </defs>
+</svg>
+
+<aside class="rail">
+  <div class="mark"><i class="mark-sun" aria-hidden="true"></i>成章</div>
+  <nav aria-label="主导航">
+    <span id="nav-mark" class="nav-mark" aria-hidden="true"></span>
+    <a href="#home" data-page="home">今日</a>
+    <a href="#history" data-page="history">记录</a>
+    <a href="#dictionary" data-page="dictionary">词典</a>
+    <a href="#models" data-page="models">模型</a>
+    <a href="#settings" data-page="settings">设置</a>
+  </nav>
+</aside>
+
+<main>
+  <div class="vista tall" id="vista" aria-hidden="true">
+    <div class="stage far" id="stage-far">
+      <img class="layer day" id="layer-base" alt="">
+      <img class="layer night" id="layer-base-n" alt="">
+      <div class="sky-clip">
+        <div class="glow" id="glow"></div><div class="moon-glow"></div>
+        <div class="sun" id="sun"></div><div class="moon" id="moon"></div>
+      </div>
+      <img class="layer day" id="layer-refl" alt="">
+      <img class="layer night" id="layer-refl-n" alt="">
+    </div>
+    <div class="stage near" id="stage-near">
+      <img class="layer day" id="layer-top" alt=""><img class="layer night" id="layer-top-n" alt="">
+    </div>
+    <div class="vista-fade"></div>
+  </div>
+
+  <section class="page" id="page-home">
+    <!-- a painter's seal on the canvas; the sky itself stays empty, as in Monet's -->
+    <div class="inscription" aria-hidden="true">
+      <span class="seal"><b>成</b><b>章</b></span>
+    </div>
+    <div class="hero">
+      <p class="keys">
+        <span><kbd class="hk">右 ⌥</kbd>说话</span>
+        <span><kbd>⇧</kbd><kbd class="hk">右 ⌥</kbd>译成<b class="tl">英文</b></span>
+        <span><kbd>esc</kbd>取消</span>
+      </p>
+      <p class="status" id="hero-status" role="status">正在加载</p>
+    </div>
+
+    <div class="banner" id="ax-banner" hidden>
+      <p>需要辅助功能权限，才能在其他 App 里使用快捷键和自动粘贴。</p>
+      <button class="btn" id="ax-open">打开设置</button>
+    </div>
+
+    <div class="recent">
+      <div class="section-head"><h2>最近</h2><span class="today" id="ledger"></span></div>
+      <ol class="entries" id="recent-list"></ol>
+      <a href="#history" class="more" id="recent-more" hidden>全部记录</a>
+    </div>
+  </section>
+
+  <section class="page" id="page-history" hidden>
+    <div class="title-row">
+      <h1 class="page-title">记录</h1>
+      <input type="search" id="history-q" placeholder="搜索" aria-label="搜索记录">
+    </div>
+    <div id="history-list"></div>
+    <button class="btn quiet danger" id="history-clear">清空记录</button>
+  </section>
+
+  <section class="page" id="page-dictionary" hidden>
+    <h1 class="page-title">词典</h1>
+    <form class="add-word" id="add-word">
+      <input id="word-input" placeholder="人名、产品名、术语" autocomplete="off" aria-label="新词">
+      <button class="btn" type="submit">添加</button>
+    </form>
+    <ul class="words" id="words"></ul>
+  </section>
+
+  <section class="page" id="page-models" hidden>
+    <h1 class="page-title">模型</h1>
+    <div class="model-group">
+      <h2>语音识别</h2>
+      <div class="options" id="models-asr" role="radiogroup" aria-label="语音识别模型"></div>
+    </div>
+    <div class="model-group">
+      <h2>文字整理</h2>
+      <div class="options" id="models-llm" role="radiogroup" aria-label="文字整理模型"></div>
+    </div>
+    <details class="custom">
+      <summary>使用其他模型</summary>
+      <form class="custom-model" id="custom-model">
+        <select id="custom-kind" aria-label="模型类型">
+          <option value="llm">文字整理</option>
+          <option value="asr">语音识别</option>
+        </select>
+        <input id="custom-id" placeholder="Hugging Face 模型 ID" autocomplete="off" aria-label="模型 ID">
+        <button class="btn" type="submit">使用</button>
+      </form>
+    </details>
+  </section>
+
+  <section class="page" id="page-settings" hidden>
+    <h1 class="page-title">设置</h1>
+
+    <h2 class="group">输入</h2>
+    <div class="settings">
+      <div class="setting">
+        <div><h3>快捷键</h3><p id="hotkey-note">点"更换"，然后按下想用的键：单独一个修饰键（如右 ⌥），或组合键（如 ⌃ Space、F5）。</p>
+          <div class="presets" id="hotkey-presets" aria-label="常用快捷键"></div></div>
+        <div class="hotkey">
+          <kbd class="hotkey-now" id="hotkey-now"></kbd>
+          <button class="btn quiet" id="hotkey-record" type="button">更换</button>
+        </div>
+      </div>
+      <div class="setting">
+        <div><h3>说话方式</h3><p>按住说话松开结束，或者按一下开始、再按一下结束。</p></div>
+        <div class="seg" id="set-hotkey-mode" role="radiogroup" aria-label="说话方式"></div>
+      </div>
+
+      <div class="setting">
+        <div><h3>外观</h3><p>夜间模式会让画里的太阳落下、月亮升起。</p></div>
+        <div class="seg" id="set-appearance" role="radiogroup" aria-label="外观"></div>
+      </div>
+      <div class="setting">
+        <div><h3>麦克风</h3><p id="mic-note">蓝牙耳机会丢掉开头的字</p></div>
+        <select id="set-mic" aria-label="麦克风"></select>
+      </div>
+      <div class="setting">
+        <div><h3>麦克风常开</h3><p>保留按下前的半秒声音</p></div>
+        <label class="switch"><input type="checkbox" id="set-keepmic"><span></span></label>
+      </div>
+      <div class="setting">
+        <h3>说话的语言</h3>
+        <div class="seg" id="set-language" role="radiogroup" aria-label="说话的语言">
+          <button data-v="Chinese">中文</button><button data-v="auto">自动</button>
+        </div>
+      </div>
+      <div class="setting">
+        <div><h3>松开后继续收音</h3><p>没说完就松开时多听一会儿</p></div>
+        <label class="range"><input type="range" id="set-postroll" min="0" max="500" step="50"><output id="postroll-out"></output></label>
+      </div>
+    </div>
+
+    <h2 class="group">输出</h2>
+    <div class="settings">
+      <div class="setting">
+        <h3>翻译成</h3>
+        <select id="set-translate" aria-label="翻译成">
+          <option>英文</option><option>日文</option><option>韩文</option>
+          <option>法文</option><option>德文</option><option>西班牙文</option><option>繁体中文</option>
+        </select>
+      </div>
+      <div class="setting">
+        <div><h3>自动粘贴</h3><p>关闭后只复制到剪贴板</p></div>
+        <label class="switch"><input type="checkbox" id="set-paste"><span></span></label>
+      </div>
+      <div class="setting">
+        <div><h3>短句直接输出</h3><p>“好的”“收到”不经过整理</p></div>
+        <label class="switch"><input type="checkbox" id="set-fast"><span></span></label>
+      </div>
+      <div class="setting">
+        <h3>保存录音</h3>
+        <label class="switch"><input type="checkbox" id="set-saveaudio"><span></span></label>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="app.js"></script>
+</body>
+</html>

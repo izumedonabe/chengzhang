@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --sun: #EE5A24; --haze: #E8ECE8; --muted: #A9B8BD;
+    --display: -apple-system, "PingFang SC", sans-serif;
+    --numeral: -apple-system, "PingFang SC", sans-serif;
+  }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; cursor: default; user-select: none; }
+  body { display: flex; align-items: flex-end; justify-content: center; padding-bottom: 14px; box-sizing: border-box;
+         font: 13px/1.4 -apple-system, "PingFang SC", sans-serif; -webkit-font-smoothing: antialiased; }
+
+  .pill {
+    display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 10px;
+    width: 288px; height: 60px; padding: 0 18px 0 14px; box-sizing: border-box;
+    border-radius: 30px;
+    background: rgba(34, 51, 60, 0.86);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3); backdrop-filter: blur(18px) saturate(1.3);
+    box-shadow: 0 10px 28px rgba(20, 30, 36, 0.28), inset 0 0 0 1px rgba(232, 236, 232, 0.08);
+    color: var(--haze);
+    opacity: 0; transform: translateY(10px) scale(0.98);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  body.on .pill { opacity: 1; transform: none; }
+
+  /* the painting in miniature: a sun and its broken reflection */
+  .sunset { position: relative; width: 34px; height: 44px; }
+  .sun {
+    position: absolute; left: 11px; top: 4px; width: 12px; height: 12px; border-radius: 50%;
+    background: var(--sun); box-shadow: 0 0 calc(6px + var(--lvl, 0) * 16px) rgba(238, 90, 36, calc(0.35 + var(--lvl, 0) * 0.5));
+    transition: box-shadow 0.08s linear;
+  }
+  .refl i {
+    position: absolute; left: 50%; height: 2.4px; border-radius: 2px; background: var(--sun);
+    transform: translateX(-50%) scaleX(var(--w, 0.4)); transform-origin: center;
+    transition: transform 0.09s linear, opacity 0.09s linear;
+  }
+  .refl i:nth-child(1) { top: 22px; width: 26px; }
+  .refl i:nth-child(2) { top: 28px; width: 20px; opacity: 0.8; }
+  .refl i:nth-child(3) { top: 34px; width: 15px; opacity: 0.6; }
+  .refl i:nth-child(4) { top: 40px; width: 10px; opacity: 0.4; }
+
+  body.thinking .refl i { animation: shimmer 1.1s ease-in-out infinite; }
+  body.thinking .refl i:nth-child(2) { animation-delay: 0.12s; }
+  body.thinking .refl i:nth-child(3) { animation-delay: 0.24s; }
+  body.thinking .refl i:nth-child(4) { animation-delay: 0.36s; }
+  @keyframes shimmer { 0%, 100% { transform: translateX(-50%) scaleX(0.35); } 50% { transform: translateX(-50%) scaleX(1); } }
+
+  body.idle .sun, body.error .sun { background: #8FA6AE; box-shadow: none; }
+  body.idle .refl i, body.error .refl i { background: #8FA6AE; }
+
+  .label { font: 500 14px/1.2 var(--display); white-space: nowrap; }
+  .label .num { font: 12px/1 var(--numeral); color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums; }
+  .sub { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; min-height: 1.4em; }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body class="idle">
+  <div class="pill" role="status" aria-live="polite">
+    <div class="sunset" aria-hidden="true">
+      <div class="sun"></div>
+      <div class="refl"><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div>
+      <div class="label" id="label"></div>
+      <div class="sub" id="sub"></div>
+    </div>
+  </div>
+<script>
+  const body = document.body, label = document.getElementById("label"), sub = document.getElementById("sub");
+  const bars = [...document.querySelectorAll(".refl i")];
+  let state = "hidden", lvl = 0;
+
+  function setText(l, s = "", num) {
+    label.textContent = l;
+    if (num) { const n = document.createElement("span"); n.className = "num"; n.textContent = num; label.append(n); }
+    sub.textContent = s;
+  }
+  const tail = (t, n = 24) => (t.length > n ? "…" + t.slice(-n) : t);
+
+  window.hudState = ({ state: s, payload: p }) => {
+    state = s;
+    body.className = s === "hidden" ? "idle" : s === "thinking" ? "thinking on" : s === "loading" || s === "empty" || s === "error" ? "idle on" : "on";
+    if (s === "listening") { setText(p && p.mode ? `在听，译成${p.mode}` : "在听", (p && p.hint) || "松开结束，esc 放弃"); lvl = 0; }
+    else if (s === "partial") { if (sub) sub.textContent = tail(p || ""); body.className = "on"; state = "listening"; }
+    else if (s === "thinking") setText("整理中", p && p.mode ? `译成${p.mode}` : "");
+    else if (s === "done") setText("已输入", tail((p && p.text) || "", 22), p && p.done_s != null ? `${p.done_s.toFixed(2)} 秒` : "");
+    else if (s === "copied") setText("已复制，按 ⌘V 粘贴", p && p.auto ? "打开辅助功能权限后可以自动粘贴" : tail((p && p.text) || "", 22));
+    else if (s === "empty") setText("没有听到声音", "检查麦克风，或说得再靠近一点");
+    else if (s === "loading") setText("模型还在加载", p && p.progress != null ? `${Math.round(p.progress * 100)}%，日出前稍等一下` : "稍等一下");
+    else if (s === "error") setText("没能完成", p || "");
+  };
+
+  window.hudLevel = (v) => {
+    if (state !== "listening") return;
+    lvl = 0.55 * lvl + 0.45 * v;
+    body.style.setProperty("--lvl", lvl.toFixed(3));
+    bars.forEach((b, i) => {
+      const jitter = 0.75 + Math.random() * 0.5;
+      b.style.setProperty("--w", Math.min(1, 0.22 + lvl * (1.1 - i * 0.12) * jitter).toFixed(3));
+    });
+  };
+
+  // design preview in a plain browser: cycle through the states
+  if (!window.pywebview && location.search.includes("demo")) {
+    const seq = [["listening", {}], ["partial", "我想要这个东西的 fail to pass 和 pass to pass"], ["thinking", {}], ["done", { text: "我想要这个东西的 fail to pass 和 pass to pass 这两种测试。", done_s: 0.42 }]];
+    let i = 0; hudState({ state: "listening", payload: {} });
+    setInterval(() => { if (state === "listening") hudLevel(Math.abs(Math.sin(Date.now() / 300)) * 0.9); }, 40);
+    setInterval(() => { i = (i + 1) % seq.length; hudState({ state: seq[i][0], payload: seq[i][1] }); }, 2200);
+  }
+</script>
+</body>
+</html>

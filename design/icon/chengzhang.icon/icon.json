@@ -1,0 +1,99 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "solid": "extended-srgb:0.62,0.70,0.78,1.0"
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "solid": "extended-srgb:0.09,0.13,0.24,1.0"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "name": "Disc",
+      "layers": [
+        {
+          "name": "disc",
+          "image-name-specializations": [
+            {
+              "value": "disc-day.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "disc-night.png"
+            }
+          ],
+          "glass": true
+        }
+      ],
+      "shadow": {
+        "kind": "layer-color",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.25
+      },
+      "specular": true
+    },
+    {
+      "name": "Reflections",
+      "layers": [
+        {
+          "name": "reflections",
+          "image-name-specializations": [
+            {
+              "value": "reflections-day.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "reflections-night.png"
+            }
+          ],
+          "glass": true
+        }
+      ],
+      "shadow": {
+        "kind": "layer-color",
+        "opacity": 0.12
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.45
+      },
+      "specular": true
+    },
+    {
+      "name": "Background",
+      "layers": [
+        {
+          "name": "background",
+          "image-name-specializations": [
+            {
+              "value": "background-day.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "background-night.png"
+            }
+          ],
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}

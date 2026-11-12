@@ -87,12 +87,9 @@ class Mic:
             rate = int(info["default_samplerate"])
         resample = None
         if rate != SR:
-            from math import gcd
+            from ..resample import StreamResampler  # numpy only; keeps scipy out of the app
 
-            from scipy.signal import resample_poly
-
-            g = gcd(SR, rate)
-            resample = lambda x: resample_poly(x, SR // g, rate // g).astype(np.float32)
+            resample = StreamResampler(rate, SR)
 
         def cb(indata, frames, t, status):
             x = indata[:, 0].copy()

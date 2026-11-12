@@ -69,4 +69,4 @@ native/target/release/cz-sim data/dictation/*.wav   # 引擎延迟（需先 carg
 | long（32 s，中间有停顿） | 61 / 38 | 1148 / 1888 |
 
 - 识别结果、整理质量和 Python 版一致（9 条里 6 条逐字相同，其余是贪心解码在数值误差下的分叉，两边各有对错）。
-- **差距在 Qwen3.5 的生成速度**：llama.cpp 在这台机器刚开机时 62 tok/s（MLX 76），但在当前内存压力下掉到 30–36 tok/s，而同一时刻 MLX 是 86 tok/s。稠密模型（ASR 解码器）不受影响（249 tok/s），只有 Qwen3.5 的线性注意力路径变慢（预填充也从 760 掉到 400 tok/s）。原因还没查清，需要 Metal System Trace。
+- **差距在 Qwen3.5 的生成速度**：llama.cpp 今天早些时候在这台机器上测到 62 tok/s（当时 MLX 约 76），但在当前内存压力下掉到 30–36 tok/s，而同一时刻 MLX 是 86 tok/s。稠密模型（ASR 解码器）不受影响（249 tok/s），只有 Qwen3.5 的线性注意力路径变慢（预填充也从 760 掉到 400 tok/s）。原因还没查清，需要 Metal System Trace。

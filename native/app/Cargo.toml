@@ -1,0 +1,18 @@
+[package]
+name = "chengzhang"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "成章：本地语音输入"
+
+[dependencies]
+cz-core = { path = "../crates/cz-core" }
+cz-llama = { path = "../crates/cz-llama" }
+cz-platform = { path = "../crates/cz-platform" }
+tauri = { version = "2", default-features = false, features = ["wry", "macos-private-api"] }
+serde_json = "1"
+cpal = "0.15"
+
+[build-dependencies]
+tauri-build = { version = "2", default-features = false }

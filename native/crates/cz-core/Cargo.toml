@@ -3,6 +3,7 @@ name = "cz-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 description = "成章 engine: VAD segmentation, incremental ASR -> LLM pipeline, prompts. Platform independent."
 
 [dependencies]

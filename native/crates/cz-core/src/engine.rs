@@ -141,6 +141,11 @@ impl Engine {
     pub fn send(&self, cmd: Command) {
         let _ = self.tx.send(cmd);
     }
+
+    /// A handle that can feed the engine from other threads (e.g. the audio callback).
+    pub fn sender(&self) -> Sender<Command> {
+        self.tx.clone()
+    }
 }
 
 impl Drop for Engine {

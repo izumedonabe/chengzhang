@@ -1,6 +1,6 @@
 [project]
 name = "chengzhang"
-version = "0.1.0"
+version = "0.1.1"
 description = "成章 Chengzhang: local, low-latency voice typing with polishing on Apple Silicon (MLX)"
 readme = "README.md"
 license = { text = "MIT" }

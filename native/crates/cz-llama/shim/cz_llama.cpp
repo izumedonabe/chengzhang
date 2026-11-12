@@ -100,7 +100,10 @@ static llama_model * load_model(const char * path) {
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 999;
     // CZ_NOMMAP: read weights into anonymous GPU buffers instead of mapping the file
-    mp.load_mode = getenv("CZ_NOMMAP") ? LLAMA_LOAD_MODE_NONE : LLAMA_LOAD_MODE_MMAP;
+    // mmap: weights stay file-backed, so under memory pressure macOS can drop them instead
+    // of swapping. (none / mlock measured no faster.) CZ_LOAD_MODE overrides for experiments.
+    const char * lm = getenv("CZ_LOAD_MODE");
+    mp.load_mode = lm ? llama_load_mode_from_str(lm) : LLAMA_LOAD_MODE_MMAP;
     return llama_model_load_from_file(path, mp);
 }
 

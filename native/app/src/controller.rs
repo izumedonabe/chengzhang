@@ -145,8 +145,8 @@ impl Ctl {
         let app = self.app.clone();
         let _ = self.app.run_on_main_thread(move || {
             if let Some(w) = app.get_webview_window("hud") {
-                if let Ok(ns) = w.ns_window() {
-                    if hidden { cz_platform::hide_window(ns) } else { cz_platform::show_without_focus(ns) }
+                if let Some(h) = crate::native_handle(&w) {
+                    if hidden { cz_platform::hide_window(h) } else { cz_platform::show_without_focus(h) }
                 }
             }
         });

@@ -13,7 +13,11 @@
 #include <string>
 #include <vector>
 
+#ifdef _MSC_VER
+#define CZ_API extern "C"
+#else
 #define CZ_API extern "C" __attribute__((visibility("default")))
+#endif
 
 static int g_verbose = 0;
 

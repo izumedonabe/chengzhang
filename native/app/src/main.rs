@@ -27,6 +27,16 @@ const BRIDGE: &str = r#"
 })();
 "#;
 
+/// NSWindow* on macOS, HWND on Windows.
+pub fn native_handle(w: &tauri::WebviewWindow) -> Option<*mut std::ffi::c_void> {
+    #[cfg(target_os = "macos")]
+    return w.ns_window().ok();
+    #[cfg(windows)]
+    return w.hwnd().ok().map(|h| h.0 as *mut std::ffi::c_void);
+    #[cfg(not(any(target_os = "macos", windows)))]
+    return None;
+}
+
 #[tauri::command]
 fn api(state: tauri::State<'_, Arc<Ctl>>, method: String, args: Vec<Value>) -> Result<Value, String> {
     state.api(&method, &args)
@@ -54,18 +64,19 @@ fn main() {
 
             // CZ_TEST_JS: extra script for automated checks (runs after the page has loaded)
             let test_js = std::env::var("CZ_TEST_JS").map(|js| format!("window.addEventListener('load', () => setTimeout(() => {{ {js} }}, 1500));")).unwrap_or_default();
-            let main = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("成章")
                 .inner_size(1120.0, 740.0)
                 .min_inner_size(900.0, 620.0)
                 .background_color(tauri::window::Color(0xD9, 0xE0, 0xDC, 0xFF))
-                .title_bar_style(tauri::TitleBarStyle::Overlay)
-                .hidden_title(true)
                 .initialization_script(BRIDGE)
-                .initialization_script(&test_js)
-                .build()?;
-            if let Ok(ns) = main.ns_window() {
-                cz_platform::style_main_window(ns);
+                .initialization_script(&test_js);
+            // macOS: the painting runs under a transparent title bar
+            #[cfg(target_os = "macos")]
+            let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+            let main = builder.build()?;
+            if let Some(h) = native_handle(&main) {
+                cz_platform::style_main_window(h);
             }
             let hud = WebviewWindowBuilder::new(app, "hud", WebviewUrl::App("hud.html".into()))
                 .title("成章 HUD")

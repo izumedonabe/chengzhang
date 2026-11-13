@@ -10,10 +10,15 @@ mod macos;
 #[cfg(target_os = "macos")]
 use macos as imp;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
 mod windows;
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
 use windows as imp;
+
+#[cfg(not(any(target_os = "macos", windows)))]
+mod other;
+#[cfg(not(any(target_os = "macos", windows)))]
+use other as imp;
 
 // ----------------------------------------------------------------------------- hotkey spec
 

@@ -33,9 +33,14 @@ fn main() {
                 .define("GGML_BLAS", "OFF");
         }
         "windows" => {
-            // Vulkan keeps the installer small (the CUDA runtime alone is ~400 MB)
+            // Vulkan keeps the installer small (the CUDA runtime alone is ~400 MB);
+            // the GPU driver provides vulkan-1.dll at run time.
             let vk = if std::env::var("CZ_VULKAN").is_ok() { "ON" } else { "OFF" };
             cfg.define("GGML_VULKAN", vk);
+            // CPU fallback: AVX2-era x86 (2013+), not just the build machine's CPU
+            cfg.define("GGML_AVX", "ON").define("GGML_AVX2", "ON").define("GGML_FMA", "ON").define("GGML_F16C", "ON");
+            // match Rust's dynamic CRT (/MD)
+            cfg.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");
         }
         _ => {}
     }
@@ -69,9 +74,22 @@ fn main() {
             println!("cargo:rustc-link-lib=static=ggml-blas");
         }
     }
+    if target_os == "windows" && dst.join("lib/ggml-vulkan.lib").exists() {
+        println!("cargo:rustc-link-lib=static=ggml-vulkan");
+        if let Ok(sdk) = std::env::var("VULKAN_SDK") {
+            println!("cargo:rustc-link-search=native={sdk}/Lib");
+        }
+        println!("cargo:rustc-link-lib=dylib=vulkan-1");
+    }
     for lib in ["ggml", "ggml-cpu", "ggml-base"] {
         println!("cargo:rustc-link-lib=static={lib}");
     }
+    if target_os == "windows" {
+        for lib in ["advapi32", "user32", "kernel32", "shell32", "ole32"] {
+            println!("cargo:rustc-link-lib=dylib={lib}");
+        }
+    }
+    println!("cargo:rerun-if-env-changed=CZ_VULKAN");
     if target_os == "macos" {
         for fw in ["Foundation", "Metal", "MetalKit", "Accelerate"] {
             println!("cargo:rustc-link-lib=framework={fw}");

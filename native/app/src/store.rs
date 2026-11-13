@@ -1,4 +1,5 @@
-//! Local persistence (port of store.py), in ~/Library/Application Support/Chengzhang.
+//! Local persistence (port of store.py): ~/Library/Application Support/Chengzhang on
+//! macOS, %APPDATA%\\Chengzhang on Windows.
 //! History and the dictionary are shared with the Python app (same files, same format);
 //! settings live in their own file because model ids differ (GGUF vs MLX).
 use cz_core::text::norm;
@@ -34,8 +35,16 @@ pub fn defaults() -> Map<String, Value> {
 }
 
 pub fn app_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join("Library/Application Support/Chengzhang")
+    #[cfg(windows)]
+    {
+        let base = std::env::var("APPDATA").unwrap_or_else(|_| ".".into());
+        PathBuf::from(base).join("Chengzhang")
+    }
+    #[cfg(not(windows))]
+    {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        PathBuf::from(home).join("Library/Application Support/Chengzhang")
+    }
 }
 
 pub struct Store {

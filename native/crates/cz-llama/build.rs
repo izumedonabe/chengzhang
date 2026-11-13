@@ -8,6 +8,8 @@ fn main() {
         .join("../../third_party/llama.cpp")
         .canonicalize()
         .expect("third_party/llama.cpp missing: run `git submodule update --init`");
+    // Windows: canonicalize() yields \\?\D:\… which CMake's ExternalProject can't use
+    let llama = PathBuf::from(llama.to_string_lossy().trim_start_matches(r"\\?\").to_string());
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 
     let mut cfg = cmake::Config::new(&llama);

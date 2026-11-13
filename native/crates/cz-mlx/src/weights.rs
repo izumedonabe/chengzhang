@@ -87,7 +87,13 @@ impl QLinear {
                 bits: Some(self.bits),
                 transpose: true,
             }).map_err(e)?,
-            None => x.matmul(self.w.t()).map_err(e)?,
+            // like mlx.nn.Linear: addmm(bias, x, W^T)
+            None => {
+                return match &self.bias {
+                    Some(b) => mlx_rs::ops::addmm(b, x, self.w.t(), None, None).map_err(e),
+                    None => x.matmul(self.w.t()).map_err(e),
+                }
+            }
         };
         match &self.bias {
             Some(b) => y.add(b).map_err(e),

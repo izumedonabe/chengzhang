@@ -2,6 +2,7 @@
 //! OS integration (hotkey, paste, permissions) lives in cz-platform.
 pub mod backend;
 pub mod engine;
+pub mod learn;
 pub mod prompts;
 pub mod resample;
 pub mod text;

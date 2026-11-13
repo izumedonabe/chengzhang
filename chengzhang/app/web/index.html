@@ -138,6 +138,11 @@
       <button class="btn" type="submit">添加</button>
     </form>
     <ul class="words" id="words"></ul>
+    <div class="learned" id="learned" hidden>
+      <h2>改正过的识别错误</h2>
+      <p class="learned-note">识别错了就在输入框里直接改，改好后按 <kbd class="lk"></kbd>。成章会记下改了哪些词，以后识别和整理时照着改，人名、术语的正确写法也会加进上面的词典。</p>
+      <ul class="words" id="pairs"></ul>
+    </div>
   </section>
 
   <section class="page" id="page-models" hidden>
@@ -171,9 +176,16 @@
       <div class="setting">
         <div><h3>快捷键</h3><p id="hotkey-note">点"更换"，然后按下想用的键：单独一个修饰键（如右 ⌥），或组合键（如 ⌃ Space、F5）。</p>
           <div class="presets" id="hotkey-presets" aria-label="常用快捷键"></div></div>
-        <div class="hotkey">
+        <div class="hotkey" id="main-hotkey">
           <kbd class="hotkey-now" id="hotkey-now"></kbd>
           <button class="btn quiet" id="hotkey-record" type="button">更换</button>
+        </div>
+      </div>
+      <div class="setting" id="learn-setting" hidden>
+        <div><h3>纠错快捷键</h3><p>识别有错时，在输入框里改好再按：成章会记住改了哪些词，以后照着改。没有选中文字时读整个输入框。</p></div>
+        <div class="hotkey" id="learn-hotkey">
+          <kbd class="hotkey-now" id="learn-hotkey-now"></kbd>
+          <button class="btn quiet" id="learn-hotkey-record" type="button">更换</button>
         </div>
       </div>
       <div class="setting">

@@ -6,6 +6,7 @@
 //! `Engine::send()` and the event callback.
 
 use crate::backend::{Asr, AsrSpec, Backend, Llm, LlmSpec};
+use crate::learn::{self, Pair};
 use crate::prompts;
 use crate::text::{join_segments, needs_llm, strip_context_echo, suspicious};
 use crate::vad::{Segmenter, VadConfig, SR};
@@ -19,6 +20,8 @@ pub struct Config {
     pub llm: Option<LlmSpec>, // None = no polishing
     pub language: Option<String>,
     pub dictionary: Vec<String>,
+    /// Learned corrections, most recent first (see `learn`).
+    pub corrections: Vec<Pair>,
     pub translate: Option<String>,      // default mode (CLI --translate)
     pub translate_lang: Option<String>, // extra mode available per utterance (Shift+hotkey)
     pub fast_path: bool,
@@ -38,6 +41,7 @@ impl Config {
             llm,
             language: Some("Chinese".into()),
             dictionary: vec![],
+            corrections: vec![],
             translate: None,
             translate_lang: None,
             fast_path: true,
@@ -67,6 +71,8 @@ pub enum Command {
     Unload { all: bool },
     Reload,
     SetDictionary(Vec<String>),
+    /// Dictionary and learned corrections together (one prompt rebuild).
+    SetLexicon { dictionary: Vec<String>, corrections: Vec<Pair> },
     SetTranslateLang(Option<String>),
     Live(LiveSettings),
     Quit,
@@ -169,7 +175,7 @@ struct Polisher {
 
 
 impl Polisher {
-    fn build(&mut self, modes: &[Option<String>], dictionary: &[String]) -> Result<(), String> {
+    fn build(&mut self, modes: &[Option<String>], dictionary: &[String], corrections: &[Pair]) -> Result<(), String> {
         self.modes.clear();
         for m in modes {
             if !self.modes.contains(m) && self.modes.len() < self.llm.slots() {
@@ -177,7 +183,7 @@ impl Polisher {
             }
         }
         for (i, m) in self.modes.iter().enumerate() {
-            self.llm.set_prefix(i, &prompts::prefix(dictionary, m.as_deref()))?;
+            self.llm.set_prefix(i, &prompts::prefix(dictionary, corrections, m.as_deref()))?;
         }
         self.live = None;
         Ok(())
@@ -296,6 +302,11 @@ impl Worker {
                     self.cfg.dictionary = words;
                     self.rebuild_prompts()
                 }
+                Command::SetLexicon { dictionary, corrections } => {
+                    self.cfg.dictionary = dictionary;
+                    self.cfg.corrections = corrections;
+                    self.rebuild_prompts()
+                }
                 Command::SetTranslateLang(lang) => {
                     self.cfg.translate_lang = lang;
                     self.rebuild_prompts()
@@ -352,7 +363,7 @@ impl Worker {
                 let slots = if self.cfg.translate.is_some() { 3 } else { 2 };
                 let llm = self.backend.load_llm(&spec, slots)?;
                 let mut p = Polisher { llm, modes: vec![], live: None };
-                p.build(&self.modes(), &self.cfg.dictionary)?;
+                p.build(&self.modes(), &self.cfg.dictionary, &self.cfg.corrections)?;
                 (self.emit)(Event::Loading { stage: "warmup", progress: 0.85, reload });
                 p.run("嗯那个我们明天开会吧", &None, false, 16, &mut |_| {})?;
                 self.polisher = Some(p);
@@ -382,7 +393,7 @@ impl Worker {
         let modes = self.modes();
         if let Some(p) = &mut self.polisher {
             let t = Instant::now();
-            p.build(&modes, &self.cfg.dictionary)?;
+            p.build(&modes, &self.cfg.dictionary, &self.cfg.corrections)?;
             (self.emit)(Event::PromptsRebuilt { secs: t.elapsed().as_secs_f32() });
         }
         Ok(())
@@ -422,6 +433,8 @@ impl Worker {
         let asr = self.asr.as_mut().ok_or("speech model not loaded")?;
         let text = asr.transcribe(self.seg.audio(start, end), &ctx, self.cfg.language.as_deref())?;
         let text = strip_context_echo(&text, &self.cfg.dictionary);
+        // learned mistakes: English ones always, Chinese ones only without a polisher to judge them
+        let text = learn::apply(&text, &self.cfg.corrections, self.polisher.is_none());
         let asr_s = t.elapsed().as_secs_f32();
         let t = Instant::now();
         if !text.is_empty() {
@@ -503,7 +516,8 @@ impl Worker {
         let (mut text, mut fallback) = (raw.clone(), false);
         let mode = self.mode.clone();
         match &mut self.polisher {
-            Some(p) if !raw.is_empty() && needs_llm(&raw, mode.as_deref(), self.cfg.fast_path) => {
+            Some(p) if !raw.is_empty()
+                && (needs_llm(&raw, mode.as_deref(), self.cfg.fast_path) || learn::mentions(&raw, &self.cfg.corrections)) => {
                 match p.run(&raw, &mode, self.cfg.incremental_prefill, self.cfg.max_tokens, &mut on_text) {
                     Ok((out, stats)) => {
                         if suspicious(&raw, &out, mode.as_deref()) {

@@ -228,7 +228,7 @@ function frame(name = shot, { instant = false } = {}) {
 /* ======================================================================= backend */
 
 let api = null;
-const STATE = { status: {}, settings: {}, stats: {}, hotkeys: {}, hotkey_label: "右 ⌥" };
+const STATE = { status: {}, settings: {}, stats: {}, hotkeys: {}, hotkey_label: "右 ⌥", learn_hotkey_label: "⌃⌥ C" };
 
 // README screenshots: ?theme=light|dark picks the look and hides the permission banner (mock only)
 const SHOT = new URLSearchParams(location.search);
@@ -237,13 +237,15 @@ function mockApi() {
   const now = Date.now() / 1000;
   const hist = [
     { id: "a1", ts: now - 300, app: "微信", text: "明天的会议改到下午三点，地点还是在三楼会议室。", raw: "嗯那个，我想跟你说一下，就是明天的会议改到下午三点了，然后地点还是在三楼会议室。", audio_s: 7.0, done_s: 0.44 },
+    { id: "a5", ts: now - 900, app: "微信", text: "我们的项目叫成长，后端用的是 read is。", corrected: "我们的项目叫成章，后端用的是 Redis。", raw: "我们的项目叫成长然后后端用的是read is", audio_s: 4.1, done_s: 0.38 },
     { id: "a2", ts: now - 1900, app: "Slack", text: "今天要做三件事：\n1. 修复登录的 bug\n2. 更新 README 文档\n3. 跟设计师对一下新的 UI 稿", raw: "今天要做三件事第一是修复登录的bug第二是更新README文档第三是跟设计师对一下新的UI搞", audio_s: 8.7, done_s: 0.85 },
     { id: "a3", ts: now - 4000, app: "Mail", mode: "英文", text: "We will release a new version next week. Feel free to try it and share your feedback.", raw: "我们下周会发布新版本，欢迎大家试用并提供反馈。", audio_s: 6.5, done_s: 0.61 },
     { id: "a4", ts: now - 90000, app: "Cursor", text: "这个 API 的 latency 有点高，可以先加一个 cache，再看看是不是 database 的 query 太慢了。", raw: "这个API的latency有点高我觉得可以先加一个cache然后再看看是不是day to day的query太慢了", audio_s: 8.4, done_s: 0.73 },
   ];
-  let dict = ["成章", "database", "README", "UI稿", "fail to pass", "pass to pass"];
+  let dict = ["成章", "database", "README", "UI稿", "fail to pass", "pass to pass", "Redis"];
+  let pairs = [{ wrong: "read is", right: "Redis", n: 3 }, { wrong: "成长", right: "成章", n: 1 }, { wrong: "day to day", right: "database", n: 2 }];
   const settings = { asr_model: "mlx-community/Qwen3-ASR-0.6B-8bit", llm_model: "mlx-community/Qwen3.5-4B-MLX-4bit",
-    hotkey: { kind: "modifier", keycode: 61 }, hotkey_mode: "hold", translate_lang: "英文", language: "Chinese", post_roll_ms: 300, fast_path: true, auto_paste: true, appearance: SHOT.get("theme") || "auto" };
+    hotkey: { kind: "modifier", keycode: 61 }, learn_hotkey: { kind: "key", keycode: 8, mods: ["control", "option"], name: "C" }, hotkey_mode: "hold", translate_lang: "英文", language: "Chinese", post_roll_ms: 300, fast_path: true, auto_paste: true, appearance: SHOT.get("theme") || "auto" };
   const status = { state: "loading", stage: "vad", progress: 0.02, error: null };
   const stages = [["vad", 0.05], ["asr", 0.15], ["llm", 0.45], ["warmup", 0.85]];
   stages.forEach(([s, p], i) => setTimeout(() => { Object.assign(status, { stage: s, progress: p }); otlEmit({ kind: "status", payload: { ...status } }); }, 500 + i * 900));
@@ -267,6 +269,7 @@ function mockApi() {
   const ok = (v) => Promise.resolve(v);
   return {
     state: () => ok({ status: { ...status }, settings: { ...settings }, hotkey_label: settings.hotkey.kind === "modifier" ? ({ 61: "右 ⌥", 54: "右 ⌘", 60: "右 ⇧", 62: "右 ⌃", 63: "fn" }[settings.hotkey.keycode] || "?") : "⌃ Space",
+      learn_hotkey_label: `${(settings.learn_hotkey.mods || []).map((m) => ({ control: "⌃", option: "⌥", shift: "⇧", command: "⌘" })[m]).join("")} ${settings.learn_hotkey.name}`,
       hotkey_presets: [[61, "右 ⌥"], [54, "右 ⌘"], [60, "右 ⇧"], [62, "右 ⌃"], [63, "fn"]].map(([k, l]) => ({ spec: { kind: "modifier", keycode: k }, label: l })), accessibility: SHOT.has("theme"), stats: stats() }),
     models: () => { const c = catalog(); c.asr.forEach((m) => (m.selected = m.id === settings.asr_model)); c.llm.forEach((m) => (m.selected = m.id === settings.llm_model)); return ok(c); },
     history: (limit = 50, offset = 0, q = "") => ok(hist.filter((e) => !q || e.text.includes(q) || e.raw.includes(q)).slice(offset, offset + limit)),
@@ -275,6 +278,9 @@ function mockApi() {
     copy: () => ok(true),
     dictionary: () => ok([...dict]),
     save_dictionary: (w) => ok((dict = [...new Set(w)])),
+    corrections: () => ok(pairs.map((p) => ({ ...p }))),
+    delete_correction: (w) => ok((pairs = pairs.filter((p) => p.wrong !== w)).map((p) => ({ ...p }))),
+    set_learn_hotkey: (spec) => { settings.learn_hotkey = spec; return api.state(); },
     set_setting: (k, v) => { settings[k] = v; return api.state(); },
     select_model: (kind, id) => { settings[kind === "asr" ? "asr_model" : "llm_model"] = id; return api.state(); },
     download: () => ok(true),
@@ -325,6 +331,7 @@ function renderStatus(st) {
 
 function renderLabels() {
   $$(".hk").forEach((k) => (k.textContent = STATE.hotkey_label));
+  $$(".lk").forEach((k) => (k.textContent = STATE.learn_hotkey_label || ""));
   $$(".tl").forEach((k) => (k.textContent = STATE.settings.translate_lang || "英文"));
 }
 
@@ -368,18 +375,20 @@ function dayLabel(ts) {
 const clock = (ts) => new Date(ts * 1000).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
 
 function entryEl(e, { onDelete } = {}) {
+  const text = e.corrected || e.text; // what the user fixed it to with the correction hotkey
   const raw = h("p", { class: "entry-raw", hidden: true }, e.raw || "");
   const toggle = h("button", { type: "button", onclick: () => { raw.hidden = !raw.hidden; toggle.textContent = raw.hidden ? "原话" : "收起原话"; } }, "原话");
   return h("li", { class: "entry" },
-    h("p", { class: "entry-text" }, e.text),
+    h("p", { class: "entry-text" }, text),
     raw,
     h("div", { class: "entry-meta" },
       h("span", { class: "num" }, clock(e.ts)),
       e.app ? h("span", {}, e.app) : null,
       e.mode ? h("span", { class: "tag" }, `译成${e.mode}`) : null,
+      e.corrected && e.corrected !== e.text ? h("span", { class: "tag", title: `原来是：${e.text}` }, "已改正") : null,
       h("span", { class: "entry-actions" },
-        h("button", { type: "button", onclick: () => api.copy(e.text).then(() => toast("已复制")) }, "复制"),
-        e.raw && e.raw !== e.text ? toggle : null,
+        h("button", { type: "button", onclick: () => api.copy(text).then(() => toast("已复制")) }, "复制"),
+        e.raw && e.raw !== text ? toggle : null,
         onDelete ? h("button", { type: "button", onclick: onDelete }, "删除") : null)));
 }
 
@@ -426,6 +435,18 @@ let words = [];
 async function loadDictionary() {
   words = await api.dictionary();
   renderWords();
+  $("#learned").hidden = !api.corrections;
+  if (api.corrections) renderPairs(await api.corrections());
+}
+function renderPairs(list) {
+  const ul = $("#pairs");
+  ul.innerHTML = "";
+  if (!list.length) ul.append(h("li", { class: "empty-state", style: "border:0;background:none;padding:0" }, "还没有"));
+  list.forEach((p) => ul.append(h("li", { title: p.n > 1 ? `改过 ${p.n} 次` : "" },
+    p.wrong, h("span", { class: "arrow" }, "→"), p.right,
+    p.n > 1 ? h("span", { class: "times" }, `×${p.n}`) : null,
+    h("button", { type: "button", "aria-label": `删除 ${p.wrong} → ${p.right}`,
+      onclick: async () => { renderPairs(await api.delete_correction(p.wrong)); toast("已删除"); } }, "×"))));
 }
 function renderWords(fresh) {
   const ul = $("#words");
@@ -530,42 +551,73 @@ async function saveHotkey(spec) {
   toast(`快捷键改为 ${st.hotkey_label}`);
 }
 
+async function saveLearnHotkey(spec) {
+  try {
+    const st = await api.set_learn_hotkey(spec);
+    Object.assign(STATE, { settings: st.settings, learn_hotkey_label: st.learn_hotkey_label });
+    toast(`纠错快捷键改为 ${st.learn_hotkey_label}`);
+  } catch (err) {
+    toast(String(err).includes("相同") ? "和说话快捷键一样了，换一个" : "没能保存");
+  }
+  renderLabels();
+  renderSettings();
+}
+
+// two recorders share one keyboard listener: the dictation hotkey and the correction hotkey
+const RECORDERS = {
+  main: { box: "#main-hotkey", now: "#hotkey-now", btn: "#hotkey-record", label: () => STATE.hotkey_label, save: (s) => saveHotkey(s), lone: true },
+  learn: { box: "#learn-hotkey", now: "#learn-hotkey-now", btn: "#learn-hotkey-record", label: () => STATE.learn_hotkey_label, save: (s) => saveLearnHotkey(s), lone: false },
+};
+
 let recording = null;
 function stopRecording() {
   if (!recording) return;
+  const r = recording.r;
   window.removeEventListener("keydown", recording.down, true);
   window.removeEventListener("keyup", recording.up, true);
-  $(".hotkey").classList.remove("recording");
-  $("#hotkey-record").textContent = "更换";
-  $("#hotkey-now").textContent = STATE.hotkey_label;
+  $(r.box).classList.remove("recording");
+  $(r.btn).textContent = "更换";
+  $(r.now).textContent = r.label();
   api.pause_hotkey(false);
   recording = null;
 }
-function startRecording() {
-  if (recording) return stopRecording();
+function startRecording(which = "main") {
+  if (recording) {
+    const same = recording.which === which;
+    stopRecording();
+    if (same) return;
+  }
+  const r = RECORDERS[which];
   api.pause_hotkey(true);
-  $(".hotkey").classList.add("recording");
-  $("#hotkey-record").textContent = "取消";
-  $("#hotkey-now").textContent = "请按键…";
+  $(r.box).classList.add("recording");
+  $(r.btn).textContent = "取消";
+  $(r.now).textContent = "请按键…";
   let lone = null; // a modifier pressed on its own, waiting to see whether a key follows
   const mods = (e) => ["control", "option", "shift", "command"].filter((m, i) => [e.ctrlKey, e.altKey, e.shiftKey, e.metaKey][i]);
   recording = {
+    which, r,
     down: (e) => {
       e.preventDefault(); e.stopPropagation();
       if (e.code === "Escape" && !e.ctrlKey && !e.altKey && !e.metaKey) return stopRecording();
-      if (MODIFIER_CODES[e.code] !== undefined) { lone = e.code; $("#hotkey-now").textContent = "…"; return; }
+      if (MODIFIER_CODES[e.code] !== undefined) { lone = e.code; $(r.now).textContent = "…"; return; }
       lone = null;
       const keycode = MAC_KEYCODES[e.code];
       if (keycode === undefined) return toast("这个键不支持，换一个试试");
       const m = mods(e);
       const plain = /^(Key|Digit)|^(Space|Enter|Tab|Backspace|Comma|Period|Slash|Semicolon|Quote|Minus|Equal|Backquote|Backslash|Bracket)/.test(e.code);
       if (plain && m.length === 0) return toast("单独的字母、数字或空格会影响打字，请加上修饰键");
+      if (!r.lone && m.length === 0) return toast("纠错快捷键要带修饰键，比如 ⌃⌥ C");
+      if (!r.lone && m.length === 1 && m[0] === "command" && /^Key[CVXAZ]$/.test(e.code)) return toast("这是常用的编辑快捷键，换一个");
       stopRecording();
-      saveHotkey({ kind: "key", keycode, mods: m, name: KEY_LABEL(e.code) });
+      r.save({ kind: "key", keycode, mods: m, name: KEY_LABEL(e.code) });
     },
     up: (e) => {
       e.preventDefault(); e.stopPropagation();
-      if (lone && e.code === lone) { stopRecording(); saveHotkey({ kind: "modifier", keycode: MODIFIER_CODES[lone] }); }
+      if (lone && e.code === lone) {
+        if (!r.lone) { lone = null; $(r.now).textContent = "请按键…"; return toast("纠错快捷键要用组合键，比如 ⌃⌥ C"); }
+        stopRecording();
+        r.save({ kind: "modifier", keycode: MODIFIER_CODES[lone] });
+      }
     },
   };
   window.addEventListener("keydown", recording.down, true);
@@ -583,6 +635,8 @@ function renderSettings() {
   seg($("#set-hotkey-mode"), [["hold", "按住说话"], ["toggle", "按一下开始，再按一下结束"]], s.hotkey_mode || "hold",
     (v) => setSetting("hotkey_mode", v, v === "toggle" ? "按一下开始，再按一下结束" : "按住说话"));
   renderHotkey();
+  $("#learn-setting").hidden = !api.set_learn_hotkey || !api.corrections;
+  if (!(recording && recording.which === "learn")) $("#learn-hotkey-now").textContent = STATE.learn_hotkey_label || "";
   seg($("#set-appearance"), [["auto", "跟随系统"], ["light", "白天"], ["dark", "夜间"]], s.appearance || "auto",
     async (v) => { await setSetting("appearance", v, v === "dark" ? "日落" : v === "light" ? "日出" : "跟随系统"); applyTheme(); });
   seg($("#set-language"), [["Chinese", "中文"], ["auto", "自动"]], s.language, (v) => setSetting("language", v));
@@ -679,6 +733,7 @@ window.otlEmit = ({ kind, payload }) => {
   if (kind === "status") renderStatus(payload);
   else if (kind === "stats") renderLedger(payload);
   else if (kind === "models" && $("#page-models:not([hidden])")) loadModels();
+  else if (kind === "lexicon" && $("#page-dictionary:not([hidden])")) loadDictionary();
   else if (kind === "entry") {
     loadRecent();
     if ($("#page-history:not([hidden])")) loadHistory();
@@ -776,7 +831,8 @@ function wire() {
     toast(`正在准备 ${id}`);
     loadModels();
   });
-  $("#hotkey-record").addEventListener("click", startRecording);
+  $("#hotkey-record").addEventListener("click", () => startRecording("main"));
+  $("#learn-hotkey-record").addEventListener("click", () => startRecording("learn"));
   window.addEventListener("hashchange", stopRecording);
   $("#set-translate").addEventListener("change", (e) => setSetting("translate_lang", e.target.value));
   $("#set-postroll").addEventListener("input", (e) => { const v = +e.target.value; $("#postroll-out").textContent = v ? `${v} 毫秒` : "关闭"; });

@@ -6,6 +6,7 @@ use crate::models::{self, Downloads};
 use crate::store::Store;
 use cz_core::backend::Backend;
 use cz_core::engine::{Command, Config, Engine, Event, LiveSettings, Outcome};
+use cz_core::learn;
 use cz_platform::{Hotkey, HotkeyEvent, HotkeyHandle};
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,6 +21,7 @@ pub enum Work {
     HotkeyDown(bool),
     HotkeyUp,
     HotkeyCancel,
+    Learn,
     Engine(u64, Event),
     ForceFlush(u64),
 }
@@ -41,6 +43,7 @@ pub struct Ctl {
     hud_gen: AtomicU64,
     capture_gen: AtomicU64,
     polish: AtomicBool,
+    learning: AtomicBool,
     work: Sender<Work>,
 }
 
@@ -60,6 +63,15 @@ fn backend() -> Arc<dyn Backend> {
     return Arc::new(cz_mlx::backend::MlxBackend);
     #[cfg(not(target_os = "macos"))]
     return Arc::new(cz_llama::LlamaBackend);
+}
+
+/// The correction hotkey: a key with at least one modifier; anything else = the default.
+pub fn learn_hotkey_from(v: Option<&Value>) -> Hotkey {
+    let ok = |h: &Hotkey| h.kind == "key" && !h.mods.is_empty();
+    v.and_then(|v| serde_json::from_value::<Hotkey>(v.clone()).ok())
+        .map(|h| h.sanitized())
+        .filter(ok)
+        .unwrap_or_else(|| serde_json::from_value(crate::store::defaults()["learn_hotkey"].clone()).unwrap())
 }
 
 pub fn hotkey_from(v: Option<&Value>) -> Hotkey {
@@ -105,6 +117,7 @@ impl Ctl {
             hud_gen: AtomicU64::new(0),
             capture_gen: AtomicU64::new(0),
             polish: AtomicBool::new(false),
+            learning: AtomicBool::new(false),
             work: work_tx,
         });
         let c = ctl.clone();
@@ -114,6 +127,7 @@ impl Ctl {
                     Work::HotkeyDown(shift) => c.hotkey_down(shift),
                     Work::HotkeyUp => c.hotkey_up(),
                     Work::HotkeyCancel => c.hotkey_cancel(),
+                    Work::Learn => c.learn(),
                     Work::Engine(gen, e) => c.on_engine(gen, e),
                     Work::ForceFlush(gen) => c.force_flush(gen),
                 }
@@ -210,8 +224,10 @@ impl Ctl {
         let c = self.clone();
         let _ = self.app.run_on_main_thread(move || {
             *c.hotkey.lock().unwrap() = None; // drop the old tap first
-            let spec = hotkey_from(c.store.settings().get("hotkey"));
-            let label = spec.label();
+            let s = c.store.settings();
+            let spec = hotkey_from(s.get("hotkey"));
+            let learn = learn_hotkey_from(s.get("learn_hotkey"));
+            let label = format!("{} / 纠错 {}", spec.label(), learn.label());
             let work = c.work.clone();
             // the tap runs on the main thread: only enqueue there, never block
             let cb = Arc::new(move |e: HotkeyEvent| {
@@ -219,9 +235,10 @@ impl Ctl {
                     HotkeyEvent::Down { shift } => Work::HotkeyDown(shift),
                     HotkeyEvent::Up => Work::HotkeyUp,
                     HotkeyEvent::Cancel => Work::HotkeyCancel,
+                    HotkeyEvent::Learn => Work::Learn,
                 });
             });
-            let how = match HotkeyHandle::install(spec, cb) {
+            let how = match HotkeyHandle::install(spec, Some(learn), cb) {
                 Some((h, how)) => {
                     *c.hotkey.lock().unwrap() = Some(h);
                     how
@@ -242,6 +259,7 @@ impl Ctl {
         let lang = s_str(&s, "language");
         cfg.language = if lang == "auto" { None } else { Some(lang) };
         cfg.dictionary = self.store.dictionary();
+        cfg.corrections = self.store.correction_pairs();
         let tl = s_str(&s, "translate_lang");
         cfg.translate_lang = (!tl.is_empty()).then_some(tl);
         cfg.fast_path = s_bool(&s, "fast_path");
@@ -557,6 +575,80 @@ impl Ctl {
         }
     }
 
+    // ------------------------------------------------------------------ learning from corrections
+
+    /// The correction hotkey: the user fixed the last dictation in the text box. Read it
+    /// back, diff it against what we pasted, remember the misheard words.
+    fn learn(self: &Arc<Self>) {
+        if self.recording() || self.mic.capturing() {
+            // the combo shares a modifier with the dictation key (⌥): that press wasn't dictation
+            self.hotkey_cancel();
+        }
+        if self.learning.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let c = self.clone();
+        std::thread::spawn(move || {
+            c.learn_now();
+            c.learning.store(false, Ordering::SeqCst);
+        });
+    }
+
+    fn learn_note(self: &Arc<Self>, title: &str, detail: String, error: bool) {
+        self.hud(if error { "error" } else { "learned" }, json!({"title": title, "detail": detail}));
+        self.hide_hud_later(if error { 2.6 } else { 2.2 });
+    }
+
+    fn learn_now(self: &Arc<Self>) {
+        let Some((edited, how)) = cz_platform::grab_text() else {
+            return self.learn_note("没读到文字", "选中改好的那段，再按一次".into(), true);
+        };
+        // which dictation is this? the most similar of the recent ones (newest wins a tie)
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64()).unwrap_or(0.0) - 2.0 * 86400.0;
+        let mut best: Option<(f32, Map<String, Value>)> = None;
+        for e in self.store.history(10, 0, "") {
+            if e.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0) < since {
+                continue;
+            }
+            let text = e.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let score = learn::similarity(text, &edited);
+            if best.as_ref().is_none_or(|(b, _)| score > *b) {
+                best = Some((score, e));
+            }
+        }
+        let Some((score, entry)) = best.filter(|(s, _)| *s >= 0.5) else {
+            eprintln!("[cz] learn: no matching dictation for {} chars from {how}", edited.chars().count());
+            return self.learn_note("没找到对应的输入", "只能纠正最近几次口述的结果".into(), true);
+        };
+        let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let text = entry.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(l) = learn::learn(text, &edited) else {
+            return self.learn_note("文字太长", "选中改过的那段，再按一次".into(), true);
+        };
+        eprintln!("[cz] learn: {how}, match {score:.2}, pairs {:?}, terms {:?}", l.pairs, l.terms);
+        if !l.changed {
+            return self.learn_note("没有发现改动", "先在输入框里改好，再按快捷键".into(), false);
+        }
+        if let Some(e) = self.store.update_entry(&id, "corrected", json!(l.corrected)) {
+            self.ui("entry", Value::Object(e));
+        }
+        let learned = self.store.learn_pairs(&l.pairs);
+        let added = self.store.add_words(&l.terms);
+        if learned || !added.is_empty() {
+            self.send(Command::SetLexicon { dictionary: self.store.dictionary(), corrections: self.store.correction_pairs() });
+            self.ui("lexicon", Value::Null);
+        }
+        if l.pairs.is_empty() {
+            return self.learn_note("已记下改正", "这次只是增删字词或标点，没有要学的识别错误".into(), false);
+        }
+        let mut parts: Vec<String> = l.pairs.iter().map(|(w, r)| format!("{w} → {r}")).collect();
+        if !added.is_empty() {
+            parts.push(format!("词典 +{}", added.join("、")));
+        }
+        self.learn_note("记住了", parts.join("，"), false);
+    }
+
     // ------------------------------------------------------------------ memory
 
     fn idle_watch(self: &Arc<Self>) {
@@ -618,11 +710,13 @@ impl Ctl {
             status.insert("progress".into(), json!(self.download_progress()));
         }
         let hk = hotkey_from(s.get("hotkey"));
+        let learn_hk = learn_hotkey_from(s.get("learn_hotkey"));
         let presets: Vec<Value> = Hotkey::presets().into_iter().map(|p| json!({"label": p.label(), "spec": p})).collect();
         json!({
             "status": status,
             "settings": s,
             "hotkey_label": hk.label(),
+            "learn_hotkey_label": learn_hk.label(),
             "hotkey_presets": presets,
             "accessibility": cz_platform::accessibility_trusted(false),
             "stats": self.store.stats(),
@@ -647,6 +741,15 @@ impl Ctl {
             "set_hotkey" => {
                 let spec = hotkey_from(Some(&a(0)));
                 self.store.update_setting("hotkey", serde_json::to_value(spec).unwrap());
+                self.install_hotkey();
+                self.state()
+            }
+            "set_learn_hotkey" => {
+                let spec = learn_hotkey_from(Some(&a(0)));
+                if spec == hotkey_from(self.store.settings().get("hotkey")) {
+                    return Err("和说话快捷键相同".into());
+                }
+                self.store.update_setting("learn_hotkey", serde_json::to_value(spec).unwrap());
                 self.install_hotkey();
                 self.state()
             }
@@ -686,6 +789,12 @@ impl Ctl {
                 let words = self.store.set_dictionary(&words);
                 self.send(Command::SetDictionary(words.clone()));
                 json!(words)
+            }
+            "corrections" => json!(self.store.corrections()),
+            "delete_correction" => {
+                self.store.delete_correction(&a_str(0));
+                self.send(Command::SetLexicon { dictionary: self.store.dictionary(), corrections: self.store.correction_pairs() });
+                json!(self.store.corrections())
             }
             "set_setting" => self.set_setting(&a_str(0), a(1)),
             "select_model" => {

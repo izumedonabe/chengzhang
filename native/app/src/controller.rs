@@ -24,7 +24,11 @@ pub enum Work {
     Learn,
     Engine(u64, Event),
     ForceFlush(u64),
+    Slow(u64),
 }
+
+/// After this long in "整理中" the HUD says it's slow and that esc gives up on it.
+const SLOW_AFTER: Duration = Duration::from_secs(6);
 
 pub struct Ctl {
     pub app: AppHandle,
@@ -42,6 +46,12 @@ pub struct Ctl {
     last_used: Mutex<Instant>,
     hud_gen: AtomicU64,
     capture_gen: AtomicU64,
+    /// The dictation that was released and is still being transcribed / polished.
+    pending: Mutex<Option<u64>>,
+    dictation_gen: AtomicU64,
+    /// Cancels the engine hasn't acknowledged yet: until then, what it emits belongs to
+    /// a dictation the user gave up on and must not be pasted.
+    discarding: AtomicU64,
     polish: AtomicBool,
     learning: AtomicBool,
     work: Sender<Work>,
@@ -117,6 +127,9 @@ impl Ctl {
             last_used: Mutex::new(Instant::now()),
             hud_gen: AtomicU64::new(0),
             capture_gen: AtomicU64::new(0),
+            pending: Mutex::new(None),
+            dictation_gen: AtomicU64::new(0),
+            discarding: AtomicU64::new(0),
             polish: AtomicBool::new(false),
             learning: AtomicBool::new(false),
             work: work_tx,
@@ -131,6 +144,7 @@ impl Ctl {
                     Work::Learn => c.learn(),
                     Work::Engine(gen, e) => c.on_engine(gen, e),
                     Work::ForceFlush(gen) => c.force_flush(gen),
+                    Work::Slow(gen) => c.slow(gen),
                 }
             }
         }).unwrap();
@@ -275,6 +289,10 @@ impl Ctl {
         // stop the old engine (dropping it joins its thread)
         let gen = self.engine_gen.fetch_add(1, Ordering::SeqCst) + 1;
         *self.engine_tx.lock().unwrap() = None;
+        self.discarding.store(0, Ordering::SeqCst);
+        if self.pending.lock().unwrap().take().is_some() {
+            self.hud("hidden", Value::Null);
+        }
         let old = self.engine.lock().unwrap().take();
         drop(old);
         if !missing.is_empty() {
@@ -342,6 +360,24 @@ impl Ctl {
         if gen != self.engine_gen.load(Ordering::SeqCst) {
             return; // events from an engine we already replaced
         }
+        if self.discarding.load(Ordering::SeqCst) > 0 {
+            match e {
+                Event::Canceled => {
+                    let _ = self.discarding.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+                    return;
+                }
+                // what's left of the dictation the user gave up on
+                Event::Segment(_) | Event::CaptureDone { .. } | Event::Raw(_) | Event::Text(_) | Event::Done(_) => return,
+                Event::Error(msg) => {
+                    eprintln!("[cz] engine error (cancelled dictation): {msg}");
+                    if !self.state_is("ready") {
+                        self.set_status(json!({"state": "error", "error": msg}));
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         match e {
             Event::Loading { stage, progress, reload } => {
                 let state = if reload { "waking" } else { "loading" };
@@ -361,12 +397,18 @@ impl Ctl {
             }
             Event::Error(msg) => {
                 eprintln!("[cz] engine error: {msg}");
-                if !self.state_is("ready") {
-                    self.set_status(json!({"state": "error", "error": msg}));
-                } else {
+                // a dictation in flight always gets an answer, whatever state the app is in
+                // (e.g. the LLM failing to come back while waking up)
+                let in_flight = self.pending.lock().unwrap().take().is_some() || self.recording();
+                if in_flight {
+                    self.set_recording(false);
+                    self.end_dictation();
                     let short: String = msg.chars().take(60).collect();
                     self.hud("error", json!(format!("出错了：{short}")));
-                    self.hide_hud_later(2.0);
+                    self.hide_hud_later(2.6);
+                }
+                if !self.state_is("ready") {
+                    self.set_status(json!({"state": "error", "error": msg}));
                 }
                 self.stop_capture();
             }
@@ -375,7 +417,11 @@ impl Ctl {
                 self.send(Command::Flush);
             }
             Event::Segment(info) => self.hud("partial", json!(info.text)),
-            Event::Done(o) => self.finish(*o),
+            Event::Done(o) => {
+                self.pending.lock().unwrap().take();
+                self.end_dictation();
+                self.finish(*o)
+            }
             _ => {}
         }
     }
@@ -490,6 +536,13 @@ impl Ctl {
         if self.recording() || self.mic.capturing() {
             return;
         }
+        if self.pending.lock().unwrap().is_some() {
+            // the last one isn't out yet. Starting another now would mix the two up.
+            let mut p = self.session.lock().unwrap().clone();
+            p["note"] = json!("上一段还没好，esc 可放弃");
+            self.hud("thinking", p);
+            return;
+        }
         let tl = s_str(&s, "translate_lang");
         let mode = if shift && !tl.is_empty() && self.polish.load(Ordering::SeqCst) { Some(tl) } else { None };
         *self.session.lock().unwrap() = json!({"app": cz_platform::frontmost_app(), "mode": mode});
@@ -521,12 +574,17 @@ impl Ctl {
             return;
         }
         *self.last_used.lock().unwrap() = Instant::now();
-        if let Some(h) = self.hotkey.lock().unwrap().as_ref() {
-            h.set_active(false);
-        }
+        // esc stays live until the text is out: it gives up on a slow one
         self.set_recording(false);
         self.send(Command::End(Instant::now()));
+        let d = self.dictation_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.pending.lock().unwrap() = Some(d);
         self.hud("thinking", self.session.lock().unwrap().clone());
+        let work = self.work.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(SLOW_AFTER);
+            let _ = work.send(Work::Slow(d));
+        });
         // safety net: if the engine never reports capture_done, stop anyway
         let gen = self.capture_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let work = self.work.clone();
@@ -537,13 +595,34 @@ impl Ctl {
     }
 
     fn hotkey_cancel(self: &Arc<Self>) {
+        self.end_dictation();
+        self.pending.lock().unwrap().take();
+        self.set_recording(false);
+        self.stop_capture();
+        if self.has_engine() {
+            // the engine may still be busy with it: drop whatever it says until it has
+            // seen the cancel
+            self.discarding.fetch_add(1, Ordering::SeqCst);
+            self.send(Command::Cancel);
+        }
+        self.hud("hidden", Value::Null);
+    }
+
+    /// esc goes back to the app once a dictation is over.
+    fn end_dictation(&self) {
         if let Some(h) = self.hotkey.lock().unwrap().as_ref() {
             h.set_active(false);
         }
-        self.set_recording(false);
-        self.stop_capture();
-        self.send(Command::Cancel);
-        self.hud("hidden", Value::Null);
+    }
+
+    /// Still "整理中" after a while: usually the Mac is busy (another model on the GPU, a
+    /// big build, memory swapping). Say so, rather than look stuck.
+    fn slow(&self, gen: u64) {
+        if *self.pending.lock().unwrap() == Some(gen) {
+            let mut p = self.session.lock().unwrap().clone();
+            p["note"] = json!("比平时慢，esc 可放弃");
+            self.hud("thinking", p);
+        }
     }
 
     fn force_flush(&self, gen: u64) {

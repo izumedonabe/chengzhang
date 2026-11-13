@@ -25,8 +25,41 @@ const BRIDGE: &str = r#"
   const api = new Proxy({}, { get: (_, m) => (...args) => invoke(String(m), args) });
   window.pywebview = { api, native: true };
   window.addEventListener("DOMContentLoaded", () => window.dispatchEvent(new Event("pywebviewready")));
+  // The page runs under the (transparent) title bar, so the window has no native drag
+  // area: drag it by the top strip or the empty sidebar, double-click to zoom.
+  const DRAG_STRIP = 52;
+  const draggable = (e) => {
+    if (e.button !== 0) return false;
+    const t = e.target instanceof Element ? e.target : null;
+    if (!t || t.closest("a, button, input, select, textarea, label, summary, [contenteditable], [role=button], [role=radio], [role=switch], .seg, dialog, .no-drag")) return false;
+    return e.clientY < DRAG_STRIP || !!t.closest(".rail");
+  };
+  window.addEventListener("mousedown", (e) => {
+    if (!draggable(e)) return;
+    e.preventDefault();
+    window.__TAURI_INTERNALS__.invoke(e.detail === 2 ? "zoom_window" : "drag_window");
+  }, true);
 })();
 "#;
+
+/// The HUD sits on system Liquid Glass: hud.html drops its own background.
+const HUD_GLASS: &str = r#"window.addEventListener("DOMContentLoaded", () => document.documentElement.classList.add("glass"));"#;
+
+/// Move the window with the mouse (the press that started it is still down).
+#[tauri::command]
+fn drag_window(window: tauri::WebviewWindow) {
+    let _ = window.start_dragging();
+}
+
+/// Double-click on the title area: zoom / unzoom, like a native title bar.
+#[tauri::command]
+fn zoom_window(window: tauri::WebviewWindow) {
+    if window.is_maximized().unwrap_or(false) {
+        let _ = window.unmaximize();
+    } else {
+        let _ = window.maximize();
+    }
+}
 
 #[tauri::command]
 fn api(state: tauri::State<'_, Arc<Ctl>>, method: String, args: Vec<Value>) -> Result<Value, String> {
@@ -55,7 +88,7 @@ fn main() {
         return;
     }
     let app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![api])
+        .invoke_handler(tauri::generate_handler![api, drag_window, zoom_window])
         .setup(|app| {
             let handle = app.handle().clone();
             let ctl = Ctl::new(handle.clone());
@@ -76,6 +109,7 @@ fn main() {
             if let Ok(ns) = main.ns_window() {
                 cz_platform::style_main_window(ns);
             }
+            let glass = cz_platform::has_glass();
             let hud = WebviewWindowBuilder::new(app, "hud", WebviewUrl::App("hud.html".into()))
                 .title("成章 HUD")
                 .inner_size(320.0, 96.0)
@@ -88,8 +122,33 @@ fn main() {
                 .skip_taskbar(true)
                 .resizable(false)
                 .initialization_script(BRIDGE)
+                .initialization_script(if glass { HUD_GLASS } else { "" })
                 .build()?;
             let _ = hud.set_ignore_cursor_events(true);
+            // both pages animate at the display's own rate (120 Hz on ProMotion)
+            for w in [&main, &hud] {
+                let _ = w.with_webview(|v| {
+                    #[cfg(target_os = "macos")]
+                    if !cz_platform::unlock_frame_rate(v.inner()) {
+                        eprintln!("[cz] web view stays near 60 fps");
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = v;
+                });
+            }
+            if let Ok(spec) = std::env::var("CZ_TEST_HUD") {
+                let c = ctl.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    c.test_hud(&spec);
+                });
+            }
+            if glass {
+                if let Ok(ns) = hud.ns_window() {
+                    // where hud.html draws its pill: 288×60, centred, 14 pt above the bottom
+                    cz_platform::add_glass(ns, (16.0, 22.0, 288.0, 60.0), 30.0);
+                }
+            }
             apply_icon(&handle);
             ctl.boot();
             Ok(())

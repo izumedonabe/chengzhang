@@ -164,6 +164,13 @@ impl Ctl {
         self.eval("main", format!("window.otlEmit && window.otlEmit({p})"));
     }
 
+    /// CZ_TEST_HUD={"state": …, "payload": …}: show that HUD state (automated visual checks).
+    pub fn test_hud(&self, spec: &str) {
+        if let Ok(v) = serde_json::from_str::<Value>(spec) {
+            self.hud(v["state"].as_str().unwrap_or("listening"), v["payload"].clone());
+        }
+    }
+
     fn hud(&self, state: &str, payload: Value) {
         if state != "hidden" {
             self.hud_gen.fetch_add(1, Ordering::SeqCst);

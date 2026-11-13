@@ -3,7 +3,7 @@
 use crate::{Hotkey, HotkeyCallback, HotkeyEvent};
 use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
 use objc2::{class, msg_send, sel};
-use objc2_foundation::{NSRect, NSString};
+use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -539,6 +539,95 @@ pub fn hide_window(w: *mut c_void) {
             let _: () = msg_send![w, orderOut: std::ptr::null::<AnyObject>()];
         }
     }
+}
+
+/// WebKit holds pages to ~60 fps even on a 120 Hz ProMotion display ("Prefer Page Rendering
+/// Updates near 60fps", on by default, as in Safari). Turn that off for one of our web views so
+/// animations run at the display's own rate. Private WebKit preference; skipped if absent.
+pub fn unlock_frame_rate(webview: *mut c_void) -> bool {
+    let v = webview as *mut AnyObject;
+    if v.is_null() {
+        return false;
+    }
+    unsafe {
+        let cfg: *mut AnyObject = msg_send![v, configuration];
+        let prefs: *mut AnyObject = if cfg.is_null() { std::ptr::null_mut() } else { msg_send![cfg, preferences] };
+        if prefs.is_null() {
+            return false;
+        }
+        let setter = sel!(_setPreferPageRenderingUpdatesNear60FPSEnabled:);
+        let ok: Bool = msg_send![prefs, respondsToSelector: setter];
+        if ok.as_bool() {
+            let _: () = msg_send![prefs, _setPreferPageRenderingUpdatesNear60FPSEnabled: Bool::NO];
+            return true;
+        }
+        // newer WebKit: the same switch as a "feature"
+        let cls = class!(WKPreferences);
+        let has: Bool = msg_send![cls, respondsToSelector: sel!(_features)];
+        let can: Bool = msg_send![prefs, respondsToSelector: sel!(_setEnabled:forFeature:)];
+        if !has.as_bool() || !can.as_bool() {
+            return false;
+        }
+        let features: *mut AnyObject = msg_send![cls, _features];
+        let n: usize = msg_send![features, count];
+        for i in 0..n {
+            let f: *mut AnyObject = msg_send![features, objectAtIndex: i];
+            let key: *mut NSString = msg_send![f, key];
+            if key.as_ref().is_some_and(|k| k.to_string() == "PreferPageRenderingUpdatesNear60FPSEnabled") {
+                let _: () = msg_send![prefs, _setEnabled: Bool::NO, forFeature: f];
+                return true;
+            }
+        }
+        false
+    }
+}
+
+pub fn has_glass() -> bool {
+    AnyClass::get(c"NSGlassEffectView").is_some()
+}
+
+/// macOS 26+: put a Liquid Glass capsule (NSGlassEffectView) behind the window's page, at
+/// `frame` = (x, y from the top, width, height) in points. False where the system has no
+/// Liquid Glass; the page then draws its own background.
+pub fn add_glass(w: *mut c_void, frame: (f64, f64, f64, f64), radius: f64) -> bool {
+    let w = w as *mut AnyObject;
+    let Some(cls) = AnyClass::get(c"NSGlassEffectView") else { return false };
+    if w.is_null() {
+        return false;
+    }
+    unsafe {
+        let content: *mut AnyObject = msg_send![w, contentView];
+        if content.is_null() {
+            return false;
+        }
+        let (x, top, width, height) = frame;
+        let bounds: NSRect = msg_send![content, bounds];
+        let flipped: Bool = msg_send![content, isFlipped];
+        let y = if flipped.as_bool() { top } else { bounds.size.height - top - height };
+        let g: *mut AnyObject = msg_send![cls, alloc];
+        let g: *mut AnyObject = msg_send![g, initWithFrame: NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))];
+        if g.is_null() {
+            return false;
+        }
+        let responds = |sel: Sel| -> bool {
+            let r: Bool = msg_send![g, respondsToSelector: sel];
+            r.as_bool()
+        };
+        if responds(sel!(setCornerRadius:)) {
+            let _: () = msg_send![g, setCornerRadius: radius];
+        }
+        if responds(sel!(setStyle:)) {
+            let _: () = msg_send![g, setStyle: 1isize]; // .clear: the see-through glass
+        }
+        if responds(sel!(setTintColor:)) {
+            // a little ink, so light text stays readable over white pages
+            let tint: *mut AnyObject = msg_send![class!(NSColor), colorWithSRGBRed: 0.08f64, green: 0.12f64, blue: 0.15f64, alpha: 0.16f64];
+            let _: () = msg_send![g, setTintColor: tint];
+        }
+        // below the web view (NSWindowBelow, relative to nothing = behind every sibling)
+        let _: () = msg_send![content, addSubview: g, positioned: -1isize, relativeTo: std::ptr::null::<AnyObject>()];
+    }
+    true
 }
 
 pub fn style_main_window(w: *mut c_void) {

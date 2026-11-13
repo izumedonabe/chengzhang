@@ -1,6 +1,11 @@
 //! 16 kHz mono capture from a chosen device (port of the Python Mic class).
 //! The cpal stream lives on its own thread. keep_open: the stream keeps running and
 //! the last 0.5 s before the hotkey are kept, so the first syllable is never lost.
+//!
+//! cpal 0.15 on macOS never stops a dropped input stream (its disconnect listener keeps
+//! the stream alive), so a dropped stream goes on feeding us audio. Streams are therefore
+//! paused, never just dropped: between dictations the one stream is paused (mic off) and
+//! resumed for the next one.
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -87,6 +92,7 @@ impl Mic {
         let name2 = name.clone();
         std::thread::Builder::new().name("cz-mic".into()).spawn(move || {
             let mut stream: Option<cpal::Stream> = None;
+            let mut paused = false;
             let mut device: Option<String> = None;
             for cmd in rx {
                 match cmd {
@@ -95,14 +101,21 @@ impl Mic {
                         device = d;
                         shared.keep_open.store(keep_open, Ordering::Relaxed);
                         if changed && !shared.capturing.load(Ordering::Relaxed) {
-                            stream = None;
+                            close(&mut stream);
                             shared.ring.lock().unwrap().clear();
                             if keep_open {
                                 stream = open(&device, &shared, &name2).ok();
+                                paused = false;
                             }
                         }
                     }
                     Cmd::Start(reply) => {
+                        if paused {
+                            paused = false;
+                            if stream.as_ref().is_some_and(|s| s.play().is_err()) {
+                                close(&mut stream);
+                            }
+                        }
                         if stream.is_none() {
                             match open(&device, &shared, &name2) {
                                 Ok(s) => stream = Some(s),
@@ -125,7 +138,14 @@ impl Mic {
                         shared.capturing.store(false, Ordering::Relaxed);
                         shared.level.store(0, Ordering::Relaxed);
                         if !shared.keep_open.load(Ordering::Relaxed) {
-                            stream = None; // closing the device turns the mic indicator off
+                            // pausing stops the device (the mic indicator goes off); the same
+                            // stream is resumed for the next dictation
+                            if let Some(s) = &stream {
+                                if s.pause().is_err() {
+                                    close(&mut stream);
+                                }
+                            }
+                            paused = stream.is_some();
                         }
                     }
                 }
@@ -154,6 +174,13 @@ impl Mic {
 
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+}
+
+/// Stop a stream for good. Dropping alone isn't enough (see the top of this file).
+fn close(stream: &mut Option<cpal::Stream>) {
+    if let Some(s) = stream.take() {
+        let _ = s.pause();
     }
 }
 
@@ -216,4 +243,39 @@ fn open(device: &Option<String>, sh: &Arc<Shared>, name: &Arc<Mutex<String>>) ->
     .map_err(|e| e.to_string())?;
     stream.play().map_err(|e| e.to_string())?;
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+
+    /// Uses the real microphone (only counts samples). Run with
+    /// `cargo test -p chengzhang -- --ignored one_stream`.
+    /// Each dictation must get about as many samples as it lasted, however many came
+    /// before it, and nothing may arrive between dictations.
+    #[test]
+    #[ignore]
+    fn one_stream_however_many_dictations() {
+        let got = Arc::new(AtomicUsize::new(0));
+        let g = got.clone();
+        let mic = Mic::new(Arc::new(move |x: Vec<f32>| {
+            g.fetch_add(x.len(), Ordering::SeqCst);
+        }));
+        mic.configure(resolve_mic("auto"), false);
+        for i in 0..5 {
+            got.store(0, Ordering::SeqCst);
+            mic.start().unwrap();
+            std::thread::sleep(Duration::from_millis(1000));
+            mic.stop();
+            std::thread::sleep(Duration::from_millis(300));
+            let n = got.swap(0, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(700));
+            let idle = got.load(Ordering::SeqCst);
+            eprintln!("dictation {i}: {:.2} s of audio for 1.0 s, {idle} samples while stopped", n as f32 / 16000.0);
+            assert!((12000..=20000).contains(&n), "dictation {i}: {n} samples for 1 s");
+            assert_eq!(idle, 0, "audio kept coming after stop");
+        }
+    }
 }

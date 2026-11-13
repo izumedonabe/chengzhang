@@ -26,6 +26,7 @@ pub fn defaults() -> Map<String, Value> {
         "fast_path": true,
         "auto_paste": true,
         "appearance": "auto",
+        "download_source": "auto",            // auto | huggingface | modelscope
         "mic": "auto",
         "keep_mic_open": false,
         "save_audio": false,

@@ -119,6 +119,10 @@ impl Downloads {
         Downloads { dir, active: Arc::default(), on_change }
     }
 
+    /// The download_source setting. GGUF checkpoints are only fetched from Hugging Face
+    /// for now; ModelScope (macOS) mirrors the MLX repos.
+    pub fn set_source(&self, _pref: &str) {}
+
     pub fn state(&self, id: &str) -> Option<Value> {
         let d = self.active.lock().unwrap().get(id).cloned()?;
         let m = find(id)?;

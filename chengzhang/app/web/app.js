@@ -244,7 +244,7 @@ function mockApi() {
   ];
   let dict = ["成章", "database", "README", "UI稿", "fail to pass", "pass to pass", "Redis"];
   const settings = { asr_model: "mlx-community/Qwen3-ASR-0.6B-8bit", llm_model: "mlx-community/Qwen3.5-4B-MLX-4bit",
-    hotkey: { kind: "modifier", keycode: 61 }, learn_hotkey: { kind: "key", keycode: 8, mods: ["control", "option"], name: "C" }, hotkey_mode: "hold", translate_lang: "英文", language: "Chinese", post_roll_ms: 300, fast_path: true, auto_paste: true, appearance: SHOT.get("theme") || "auto" };
+    hotkey: { kind: "modifier", keycode: 61 }, learn_hotkey: { kind: "key", keycode: 8, mods: ["control", "option"], name: "C" }, hotkey_mode: "hold", translate_lang: "英文", language: "Chinese", post_roll_ms: 300, fast_path: true, auto_paste: true, appearance: SHOT.get("theme") || "auto", download_source: "auto" };
   const status = { state: "loading", stage: "vad", progress: 0.02, error: null };
   const stages = [["vad", 0.05], ["asr", 0.15], ["llm", 0.45], ["warmup", 0.85]];
   stages.forEach(([s, p], i) => setTimeout(() => { Object.assign(status, { stage: s, progress: p }); otlEmit({ kind: "status", payload: { ...status } }); }, 500 + i * 900));
@@ -455,9 +455,11 @@ function modelState(m) {
   const st = STATE.status;
   if (m.download && m.download.status === "downloading") {
     const p = Math.round(m.download.progress * 100);
-    return h("span", { class: "state" }, `下载中 ${p}%`, h("span", { class: "bar" }, h("i", { style: `width:${p}%` })));
+    const from = m.download.source ? `（${m.download.source}）` : "";
+    return h("span", { class: "state" }, `下载中 ${p}%${from}`, h("span", { class: "bar" }, h("i", { style: `width:${p}%` })));
   }
-  if (m.download && m.download.status === "error") return h("span", { class: "state" }, "下载失败，点击重试");
+  if (m.download && m.download.status === "error")
+    return h("span", { class: "state", title: m.download.error || "" }, "下载失败，点击重试");
   if (m.selected) {
     if (st.state === "ready") return h("span", { class: "state in-use" }, "使用中");
     if (st.state === "error") return h("span", { class: "state" }, "加载失败");
@@ -481,7 +483,18 @@ function optionEl(kind, m) {
       Object.keys(m.facts || {}).length ? h("span", { class: "facts" }, Object.entries(m.facts).map(([k, v]) => h("span", {}, k, h("b", {}, v)))) : null),
     modelState(m));
 }
+function renderDownloadSource() {
+  // the native app has this setting; the Python app doesn't
+  const box = $("#dl-source-setting");
+  box.hidden = !("download_source" in (STATE.settings || {}));
+  if (box.hidden) return;
+  seg($("#set-dl-source"), [["auto", "自动"], ["huggingface", "Hugging Face"], ["modelscope", "ModelScope"]],
+    STATE.settings.download_source || "auto",
+    (v) => setSetting("download_source", v, v === "modelscope" ? "之后从 ModelScope 下载" : v === "huggingface" ? "之后从 Hugging Face 下载" : "自动选择下载源"));
+}
+
 async function loadModels() {
+  renderDownloadSource();
   const c = await api.models();
   const a = $("#models-asr"), l = $("#models-llm");
   a.innerHTML = ""; l.innerHTML = "";

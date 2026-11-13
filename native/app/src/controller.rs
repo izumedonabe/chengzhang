@@ -99,6 +99,7 @@ impl Ctl {
                 c.on_download_change(id);
             }
         }));
+        downloads.set_source(store.settings().get("download_source").and_then(|v| v.as_str()).unwrap_or("auto"));
         let status = json!({"state": "starting", "stage": null, "progress": 0.0, "error": null});
         let ctl = Arc::new(Ctl {
             app,
@@ -845,6 +846,7 @@ impl Ctl {
             }
             "asr_model" | "llm_model" if before.get(key) != Some(&value) => self.load_engine(),
             "mic" | "keep_mic_open" => self.configure_mic(),
+            "download_source" => self.downloads.set_source(value.as_str().unwrap_or("auto")),
             _ => self.apply_live_settings(),
         }
         self.state()

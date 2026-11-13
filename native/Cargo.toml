@@ -15,6 +15,13 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
+# Build-time code (proc macros, build scripts) is never shipped: don't strip it. With
+# MACOSX_DEPLOYMENT_TARGET set, stripping proc-macro dylibs leaves them unloadable
+# ("mis-aligned LINKEDIT string pool") and clean builds fail.
+[profile.release.build-override]
+debug = true    # with debug info on, cargo doesn't add -C strip=debuginfo
+strip = false
+
 # the shell (Tauri, wry, tao…) is optimized for size; the inference path stays at -O3
 [profile.release.package."*"]
 opt-level = "s"

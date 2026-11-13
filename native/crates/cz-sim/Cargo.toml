@@ -1,0 +1,14 @@
+[package]
+name = "cz-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Feed WAV files through the engine in real time and report latency (like `otl --simulate`)"
+
+[dependencies]
+cz-core = { path = "../cz-core" }
+cz-llama = { path = "../cz-llama" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cz-mlx = { path = "../cz-mlx" }

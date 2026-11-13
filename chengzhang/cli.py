@@ -192,13 +192,8 @@ class App:
         except Exception:
             rate = int(dev["default_samplerate"])
         print(f"{DIM}麦克风: {dev['name']} @ {rate} Hz{RESET}")
-        if rate != SR:
-            from math import gcd
+        from .resample import StreamResampler
 
-            from scipy.signal import resample_poly
-
-            g = gcd(SR, rate)
-            up, down = SR // g, rate // g
         print("按 Enter 开始说话，再按 Enter 结束。Ctrl-C 退出。")
         while True:
             try:
@@ -207,11 +202,10 @@ class App:
                 return
 
             def feed(send, release):
+                resample = StreamResampler(rate, SR)  # fresh state per utterance
+
                 def cb(indata, frames, t, status):
-                    x = indata[:, 0].copy()
-                    if rate != SR:
-                        x = resample_poly(x, up, down).astype(np.float32)
-                    send(x)
+                    send(resample(indata[:, 0].copy()))
 
                 with sd.InputStream(samplerate=rate, channels=1, dtype="float32",
                                     blocksize=int(rate * 0.032), callback=cb):

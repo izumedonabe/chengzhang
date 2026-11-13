@@ -41,14 +41,76 @@ def standalone_python() -> Path:
     return py
 
 
-def slim(site: Path):
-    """drop what an end user never needs: tests, caches, dev-only packages"""
-    for name in ("PyObjCTest", "pyarrow", "pip", "setuptools"):
+# Packages pulled in as dependencies but never imported by the app at runtime
+# (traced with a full dictation + polish + translate run, the window, and the
+# model-download path). Keep anything loaded lazily on a real path: cffi
+# (sounddevice opens the mic through it), hf_xet (fast model downloads),
+# protobuf/google (slow-tokenizer fallback), miniaudio (audio file decoding).
+UNUSED_PACKAGES = (
+    "scipy", "scipy.libs",                        # 53 MB: replaced by chengzhang/resample.py
+    "pydantic", "pydantic_core",                  # only for CLIs / servers we don't ship
+    "pygments", "rich", "typer", "click", "markdown_it", "mdurl", "shellingham",
+    "PyObjCTest", "pyarrow", "pip", "setuptools",
+)
+# transformers ships code for hundreds of architectures; tokenizers/configs only
+# ever touch these (plus families a user may pick in the model list)
+TRANSFORMERS_KEEP = {
+    "auto", "encoder_decoder", "whisper", "audioflamingo3",
+    "llama", "qwen2", "qwen2_audio", "qwen2_moe", "qwen3", "qwen3_moe", "qwen3_next",
+    "qwen3_5", "qwen3_5_moe", "qwen3_asr", "qwen4_exp",
+    "gemma", "gemma2", "gemma3", "gemma4", "gemma4_unified", "minicpm3",
+}
+# mlx-audio is a toolkit (TTS, music, speech-to-speech, ~40 ASR models); we use
+# Qwen3-ASR and Silero VAD
+MLX_AUDIO_DROP = ("tts", "sts", "music", "codec", "lid", "tests", "server.py", "server_inference.py", "convert.py")
+STT_KEEP = {"qwen3_asr", "qwen2_audio", "phonon", "__init__.py", "base.py"}  # stt/utils.py imports phonon.transport unconditionally
+VAD_KEEP = {"silero_vad", "__init__.py"}
+STDLIB_DROP = ("idlelib", "tkinter", "turtledemo", "ensurepip", "lib2to3", "pydoc_data", "test", "unittest/test")
+
+
+def _rm(p: Path):
+    if p.is_dir() and not p.is_symlink():
+        shutil.rmtree(p, ignore_errors=True)
+    elif p.exists() or p.is_symlink():
+        p.unlink()
+
+
+def slim(site: Path, pyhome: Path):
+    """drop what an end user never needs: unused packages, other models' code,
+    tests, headers, caches"""
+    for name in UNUSED_PACKAGES:
         for p in site.glob(name):
-            shutil.rmtree(p, ignore_errors=True)
-    for pattern in ("**/__pycache__", "numpy/**/tests", "scipy/**/tests", "PIL/**/tests"):
+            _rm(p)
+        for p in site.glob(f"{name}-*.dist-info"):
+            _rm(p)
+    tf = site / "transformers" / "models"
+    for p in tf.iterdir():
+        if p.is_dir() and p.name not in TRANSFORMERS_KEEP:
+            _rm(p)
+    ma = site / "mlx_audio"
+    for name in MLX_AUDIO_DROP:
+        _rm(ma / name)
+    for p in (ma / "stt" / "models").iterdir():
+        if p.name not in STT_KEEP:
+            _rm(p)
+    for p in (ma / "vad" / "models").iterdir():
+        if p.name not in VAD_KEEP:
+            _rm(p)
+    # these package inits eagerly import every model; keep only the survivors
+    for pkg in (ma / "stt" / "models", ma / "vad" / "models"):
+        mods = sorted(p.name for p in pkg.iterdir() if p.is_dir() and (p / "__init__.py").exists())
+        (pkg / "__init__.py").write_text(f"from . import {', '.join(mods)}\n" if mods else "")
+    _rm(site / "mlx" / "include")  # C++ headers for building extensions
+    _rm(site / "mlx" / "share")    # CMake files
+    stdlib = pyhome / "lib" / f"python{PY_VERSION}"
+    for name in STDLIB_DROP:
+        _rm(stdlib / name)
+    for p in stdlib.glob("config-*"):  # static lib + Makefile for building extensions
+        for f in p.glob("*.a"):
+            _rm(f)
+    for pattern in ("**/__pycache__", "**/tests", "**/test", "numpy/**/tests", "PIL/**/tests"):
         for p in site.glob(pattern):
-            shutil.rmtree(p, ignore_errors=True)
+            _rm(p)
 
 
 def main():
@@ -69,7 +131,7 @@ def main():
     bundled_py = pyhome / "bin" / f"python{PY_VERSION}"
     run("uv", "pip", "install", "--python", bundled_py, "--compile-bytecode", ROOT)
     site = pyhome / "lib" / f"python{PY_VERSION}" / "site-packages"
-    slim(site)
+    slim(site, pyhome)
     for p in (pyhome / "bin").iterdir():  # console scripts point at this build machine
         if p.name not in (f"python{PY_VERSION}", "python3", "python"):
             p.unlink()
@@ -83,6 +145,7 @@ def main():
     old = subprocess.run(["otool", "-D", str(lib)], capture_output=True, text=True).stdout.split("\n")[1].strip()
     run("install_name_tool", "-change", old, f"@executable_path/../Resources/python/lib/libpython{PY_VERSION}.dylib", exe)
     run("install_name_tool", "-id", f"@rpath/libpython{PY_VERSION}.dylib", lib)
+    _rm(pyhome / "include")  # C headers: only needed to compile the launcher above
 
     shutil.copy(ROOT / "chengzhang/app/assets/chengzhang.icns", res / "chengzhang.icns")
     with open(contents / "Info.plist", "wb") as f:
@@ -119,8 +182,7 @@ def main():
     (ROOT / "dist").mkdir(exist_ok=True)
     dmg = ROOT / "dist" / f"Chengzhang-{version}-arm64.dmg"
     dmg.unlink(missing_ok=True)
-    run("hdiutil", "create", "-volname", "成章", "-srcfolder", stage, "-ov", "-format", "UDZO",
-        "-imagekey", "zlib-level=9", dmg)
+    run("hdiutil", "create", "-volname", "成章", "-srcfolder", stage, "-ov", "-format", "ULMO", dmg)
     shutil.move(str(stage / APP.name), APP)  # keep build/成章.app around for testing
     print(f"\nbuilt {dmg}  ({dmg.stat().st_size / 1e6:.0f} MB)")
 

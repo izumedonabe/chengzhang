@@ -1,0 +1,6 @@
+[resolver]
+incompatible-rust-versions = "fallback"
+
+# macOS 14 is the oldest system we ship for (MLX needs 14; CMake picks this up too)
+[env]
+MACOSX_DEPLOYMENT_TARGET = "14.0"

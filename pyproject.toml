@@ -10,7 +10,6 @@ dependencies = [
     "mlx-lm>=0.32.2",
     "sounddevice",
     "soundfile",
-    "scipy",
     "numpy",
     "pywebview>=6",
     "pyobjc-framework-Quartz",

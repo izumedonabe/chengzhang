@@ -63,7 +63,7 @@ xattr -dr com.apple.quarantine /Applications/成章.app
 
 ## 模型
 
-在「模型」页切换，选中后自动从 Hugging Face 下载。也可以填任意 MLX 格式模型的 repo id。
+在「模型」页切换，选中后自动从 Hugging Face 下载。和 0.1 版共用同一份模型，升级不用重新下载。
 
 | 用途 | 模型 | 下载大小 | 备注 |
 |---|---|---|---|
@@ -72,7 +72,6 @@ xattr -dr com.apple.quarantine /Applications/成章.app
 | 整理 | Qwen3.5 4B（默认） | 3.1 GB | |
 | | Qwen3.5 2B | 1.8 GB | 更快，口头禅去得不够干净 |
 | | Qwen3.5 9B | 6.0 GB | 适合长段口述 |
-| | AgenticASR Refiner 1B | 0.7 GB | 针对口语转书面语微调，改动保守；不支持翻译 |
 | | 无 | — | 直接输出识别结果 |
 
 ## 性能
@@ -81,52 +80,43 @@ M4 Pro / 24 GB，默认模型，从松开按键开始计时：
 
 | | 延迟 |
 |---|---|
-| 首字上屏 | 0.1–0.5 s |
-| 一两句话全部上屏 | 0.5–0.8 s |
-| 30 秒口述全部上屏 | 1.1–1.7 s |
+| 首字上屏 | 0.1–0.4 s |
+| 一两句话全部上屏 | 0.4–0.9 s |
+| 30 秒口述全部上屏 | 1.2–1.9 s |
 
-录音过程中，成章用 Silero VAD 在停顿处切段，边说边识别，已识别的文字会先送进整理模型做前缀缓存。松开按键时一般只剩最后一段需要处理。
+录音过程中，成章用 VAD 在停顿处切段，边说边识别，已识别的文字会先送进整理模型做前缀缓存。松开按键时一般只剩最后一段需要处理。
 
 ```
-麦克风 → Silero VAD → 按停顿切段 → Qwen3-ASR（流式）→ 整理模型（预填前缀）
+麦克风 → VAD → 按停顿切段 → Qwen3-ASR（流式）→ 整理模型（预填前缀）
 松开按键 → 识别最后一段 → 生成 → 粘贴
 ```
+
+安装后约 10 MB，待机不占 CPU，模型加载后占用约 3.9 GB 内存。
 
 测试方法和原始数据见 [docs/BENCHMARKS.md](docs/BENCHMARKS.md)。
 
 ## 从源码构建
 
-需要 Python 3.11+ 和 [uv](https://github.com/astral-sh/uv)。
+成章用 Rust 写成，代码在 [`native/`](native/README.md)。需要 Rust 1.89+、CMake、Xcode，以及 Xcode 的 Metal 工具链（`xcodebuild -downloadComponent MetalToolchain`）。
 
 ```bash
-git clone https://github.com/izumedonabe/chengzhang.git
+git clone --recursive https://github.com/izumedonabe/chengzhang.git
 cd chengzhang
-uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python -e .
-```
-
-```bash
-.venv/bin/chengzhang    # 桌面应用
-.venv/bin/otl           # 命令行版本，按 Enter 开始/结束录音
-```
-
-打包 dmg（需要 Xcode Command Line Tools），产物在 `dist/`：
-
-```bash
-.venv/bin/python tools/build_dmg.py
+native/tools/build_dmg.sh     # 产物在 native/target/release/
 ```
 
 用户数据（设置、词典、记录）保存在 `~/Library/Application Support/Chengzhang/`，模型缓存在 `~/.cache/huggingface/`。
 
-界面基于 pywebview。设计说明见 [docs/DESIGN.md](docs/DESIGN.md)。
+界面基于 [Tauri](https://tauri.app)。设计说明见 [docs/DESIGN.md](docs/DESIGN.md)。0.1 版的 Python 实现还留在 `chengzhang/` 下，不再维护。
 
 ## 致谢
 
 - [Qwen3-ASR](https://arxiv.org/abs/2601.21337)、[Qwen3.5](https://huggingface.co/Qwen)
-- [AgenticASR](https://github.com/AnXMuy/AgenticASR)（Refiner 模型）和 [AASR-Bench](https://huggingface.co/datasets/Andrew0425/AASR-Bench)（整理效果评测）
-- [MLX](https://github.com/ml-explore/mlx)、[mlx-lm](https://github.com/ml-explore/mlx-lm)、[mlx-audio](https://github.com/Neywa-Labs/mlx-audio)
-- [Silero VAD](https://github.com/snakers4/silero-vad)
-- [pywebview](https://pywebview.flowrl.com)
+- [AASR-Bench](https://huggingface.co/datasets/Andrew0425/AASR-Bench)（整理效果评测）
+- [MLX](https://github.com/ml-explore/mlx) 和 [mlx-rs](https://github.com/oxiglade/mlx-rs)；模型实现移植自 [mlx-lm](https://github.com/ml-explore/mlx-lm) 和 [mlx-audio](https://github.com/Neywa-Labs/mlx-audio)
+- [Earshot](https://github.com/pykeio/earshot)（VAD）
+- [Tauri](https://tauri.app)
+- [llama.cpp](https://github.com/ggml-org/llama.cpp)（Windows 版）
 - [霞鹜文楷](https://github.com/lxgw/LxgwWenKai)（已安装时使用）
 - 首页的画参考了莫奈的《印象·日出》（1872）
 

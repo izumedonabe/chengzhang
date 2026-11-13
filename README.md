@@ -42,7 +42,7 @@ xattr -dr com.apple.quarantine /Applications/成章.app
 - **麦克风**：第一次录音时系统会弹窗询问。
 - **辅助功能**：在 系统设置 → 隐私与安全性 → 辅助功能 里打开成章。全局快捷键和自动粘贴都依赖这一项。
 
-首次启动会下载默认模型（约 4 GB）。在国内访问 Hugging Face 不稳定时，会自动改从 [ModelScope](https://modelscope.cn) 下载；也可以在「模型」页把下载源固定成 ModelScope。
+首次启动会下载默认模型（约 4 GB）。在国内访问 Hugging Face 不稳定时，会自动改从 [ModelScope](https://modelscope.cn) 下载；也可以在「设置 → 下载」里把下载源固定成 ModelScope。
 
 ## 使用
 

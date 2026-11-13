@@ -239,3 +239,34 @@ impl Downloads {
         json!({"asr": decorate(ASR, asr_sel), "llm": decorate(LLM, llm_sel)})
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Network test: cargo test -p chengzhang -- --ignored download
+    #[test]
+    #[ignore]
+    fn download_into_hf_layout() {
+        let hub = std::env::temp_dir().join(format!("cz-hub-{}", std::process::id()));
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let tx = Mutex::new(tx);
+        let d = Downloads::new(hub.clone(), Arc::new(move |id: &str| { let _ = tx.lock().unwrap().send(id.to_string()); }));
+        let id = "mlx-community/silero-vad";
+        d.start(id);
+        loop {
+            rx.recv_timeout(std::time::Duration::from_secs(120)).unwrap();
+            let st = d.state(id).unwrap();
+            if st["status"] != "downloading" {
+                assert_eq!(st["status"], "done", "{st}");
+                break;
+            }
+        }
+        let repo = repo_dir(&hub, id);
+        let sha = std::fs::read_to_string(repo.join("refs/main")).unwrap();
+        let snap = repo.join("snapshots").join(sha.trim());
+        assert!(snap.join("config.json").exists());
+        assert!(std::fs::read_dir(&snap).unwrap().count() >= 2);
+        std::fs::remove_dir_all(&hub).unwrap();
+    }
+}

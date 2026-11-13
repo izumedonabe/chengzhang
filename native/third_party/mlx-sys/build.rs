@@ -99,6 +99,12 @@ fn build_and_link_mlx_c() {
         config.define("MLX_BUILD_CPU", "OFF");
     }
     println!("cargo:rerun-if-env-changed=CZ_MLX_CPU");
+    // 成章: build for the oldest macOS we ship to (also selects the Metal language
+    // version of mlx.metallib); without this MLX targets the build machine's macOS.
+    if let Ok(t) = std::env::var("MACOSX_DEPLOYMENT_TARGET") {
+        config.define("CMAKE_OSX_DEPLOYMENT_TARGET", &t);
+    }
+    println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
 
     #[cfg(feature = "metal")]
     {

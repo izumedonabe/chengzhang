@@ -494,7 +494,6 @@ function renderDownloadSource() {
 }
 
 async function loadModels() {
-  renderDownloadSource();
   const c = await api.models();
   const a = $("#models-asr"), l = $("#models-llm");
   a.innerHTML = ""; l.innerHTML = "";
@@ -637,6 +636,7 @@ function renderSettings() {
   renderHotkey();
   $("#learn-setting").hidden = !api.set_learn_hotkey;
   if (!(recording && recording.which === "learn")) $("#learn-hotkey-now").textContent = STATE.learn_hotkey_label || "";
+  renderDownloadSource();
   seg($("#set-appearance"), [["auto", "跟随系统"], ["light", "白天"], ["dark", "夜间"]], s.appearance || "auto",
     async (v) => { await setSetting("appearance", v, v === "dark" ? "日落" : v === "light" ? "日出" : "跟随系统"); applyTheme(); });
   seg($("#set-language"), [["Chinese", "中文"], ["auto", "自动"]], s.language, (v) => setSetting("language", v));

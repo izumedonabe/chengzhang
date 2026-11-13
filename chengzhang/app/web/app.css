@@ -532,6 +532,4 @@ html.theming .vista:not(.night) .sun, html.theming .vista:not(.night) .glow { tr
 .tally + .recent { margin-top: 44px; }
 @media (max-width: 720px) { .tally-row { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 18px; } }
 
-/* models page: download source sits above the model lists */
-.dl-source { margin-bottom: 8px; }
-.dl-source .seg button { white-space: nowrap; }
+#set-dl-source button { white-space: nowrap; }

@@ -104,8 +104,9 @@
   const still = matchMedia("(prefers-reduced-motion: reduce)").matches;
   // the reflection: [y, half length, thickness, opacity, broken?] — wide under the sun,
   // narrowing and breaking up towards the viewer, as in the painting
-  const STROKES = [[21, 11, 1.9, 0.92, false], [25.5, 9.5, 1.8, 0.78, false], [30, 8.5, 1.7, 0.64, true],
-                   [34.5, 7, 1.6, 0.5, false], [38.5, 5.5, 1.5, 0.38, true], [42, 4, 1.4, 0.28, false]];
+  // (the top stroke at full reach + sway + cap stays inside the 36 px canvas)
+  const STROKES = [[21, 12.5, 1.9, 0.92, false], [25.5, 10.5, 1.8, 0.78, false], [30, 8.5, 1.7, 0.64, true],
+                   [34.5, 6.5, 1.6, 0.5, false], [38.5, 4.6, 1.5, 0.38, true], [42, 3, 1.4, 0.28, false]];
   const LAG = 0.055;                       // s between one stroke and the next
   const HN = 512, hv = new Float32Array(HN), ht = new Float64Array(HN); let hi = 0;  // recent voice and when
   let raf = 0, last = 0, t = 0, voice = 0, glow = 0, settle = 0, live = 0;

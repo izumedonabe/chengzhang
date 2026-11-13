@@ -42,6 +42,9 @@ const BRIDGE: &str = r#"
 })();
 "#;
 
+/// The HUD sits on system Liquid Glass: hud.html drops its own background.
+const HUD_GLASS: &str = r#"window.addEventListener("DOMContentLoaded", () => document.documentElement.classList.add("glass"));"#;
+
 /// Move the window with the mouse (the press that started it is still down).
 #[tauri::command]
 fn drag_window(window: tauri::WebviewWindow) {
@@ -106,6 +109,7 @@ fn main() {
             if let Ok(ns) = main.ns_window() {
                 cz_platform::style_main_window(ns);
             }
+            let glass = cz_platform::has_glass();
             let hud = WebviewWindowBuilder::new(app, "hud", WebviewUrl::App("hud.html".into()))
                 .title("成章 HUD")
                 .inner_size(320.0, 96.0)
@@ -118,8 +122,22 @@ fn main() {
                 .skip_taskbar(true)
                 .resizable(false)
                 .initialization_script(BRIDGE)
+                .initialization_script(if glass { HUD_GLASS } else { "" })
                 .build()?;
             let _ = hud.set_ignore_cursor_events(true);
+            if let Ok(spec) = std::env::var("CZ_TEST_HUD") {
+                let c = ctl.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    c.test_hud(&spec);
+                });
+            }
+            if glass {
+                if let Ok(ns) = hud.ns_window() {
+                    // where hud.html draws its pill: 288×60, centred, 14 pt above the bottom
+                    cz_platform::add_glass(ns, (16.0, 22.0, 288.0, 60.0), 30.0);
+                }
+            }
             apply_icon(&handle);
             ctl.boot();
             Ok(())

@@ -148,6 +148,17 @@ pub fn hide_window(window: *mut std::ffi::c_void) {
     imp::hide_window(window)
 }
 
+/// Whether the system has Liquid Glass (macOS 26+).
+pub fn has_glass() -> bool {
+    imp::has_glass()
+}
+
+/// System glass (macOS Liquid Glass) behind a window's page at `frame` = (x, y from the top,
+/// width, height) with rounded corners. Returns false where there is none.
+pub fn add_glass(window: *mut std::ffi::c_void, frame: (f64, f64, f64, f64), radius: f64) -> bool {
+    imp::add_glass(window, frame, radius)
+}
+
 /// Main-window chrome: content under a transparent title bar with an inset unified toolbar.
 pub fn style_main_window(window: *mut std::ffi::c_void) {
     imp::style_main_window(window)

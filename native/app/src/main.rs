@@ -5,6 +5,11 @@
 
 mod controller;
 mod mic;
+#[cfg(target_os = "macos")]
+#[path = "models_mlx.rs"]
+mod models;
+#[cfg(not(target_os = "macos"))]
+#[path = "models_gguf.rs"]
 mod models;
 mod store;
 

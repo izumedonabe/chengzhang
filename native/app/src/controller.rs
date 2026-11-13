@@ -4,7 +4,7 @@
 use crate::mic::{self, Mic};
 use crate::models::{self, Downloads};
 use crate::store::Store;
-use cz_core::backend::{AsrSpec, LlmSpec};
+use cz_core::backend::Backend;
 use cz_core::engine::{Command, Config, Engine, Event, LiveSettings, Outcome};
 use cz_platform::{Hotkey, HotkeyEvent, HotkeyHandle};
 use serde_json::{json, Map, Value};
@@ -50,6 +50,14 @@ fn s_bool(s: &Map<String, Value>, k: &str) -> bool {
 }
 fn s_num(s: &Map<String, Value>, k: &str) -> f64 {
     s.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0)
+}
+
+/// macOS: MLX (Metal). Elsewhere: llama.cpp (Vulkan / CPU).
+fn backend() -> Arc<dyn Backend> {
+    #[cfg(target_os = "macos")]
+    return Arc::new(cz_mlx::backend::MlxBackend);
+    #[cfg(not(target_os = "macos"))]
+    return Arc::new(cz_llama::LlamaBackend);
 }
 
 pub fn hotkey_from(v: Option<&Value>) -> Hotkey {
@@ -225,13 +233,10 @@ impl Ctl {
     fn make_config(&self) -> Option<Config> {
         let s = self.store.settings();
         let dir = self.store.models_dir();
-        let asr = models::find(&s_str(&s, "asr_model")).filter(|m| !m.files.is_empty())
-            .or_else(|| models::find(crate::store::DEFAULT_ASR))?;
-        let p = models::paths(&dir, asr);
+        let asr = models::asr_spec(&dir, &s_str(&s, "asr_model")).or_else(|| models::asr_spec(&dir, models::DEFAULT_ASR))?;
         let llm_id = s_str(&s, "llm_model");
-        let llm = models::find(&llm_id).filter(|m| !m.files.is_empty())
-            .map(|m| LlmSpec { model: models::paths(&dir, m)[0].clone(), n_ctx: 2560 });
-        let mut cfg = Config::new(AsrSpec { model: p[0].clone(), mmproj: p[1].clone() }, llm);
+        let llm = if llm_id.is_empty() { None } else { models::llm_spec(&dir, &llm_id) };
+        let mut cfg = Config::new(asr, llm);
         let lang = s_str(&s, "language");
         cfg.language = if lang == "auto" { None } else { Some(lang) };
         cfg.dictionary = self.store.dictionary();
@@ -266,7 +271,7 @@ impl Ctl {
         self.polish.store(cfg.llm.is_some(), Ordering::SeqCst);
         self.set_status(json!({"state": "loading", "stage": "asr", "progress": 0.02, "error": null}));
         let work = self.work.clone();
-        let eng = Engine::spawn(cfg, Arc::new(cz_llama::LlamaBackend), Box::new(move |e| {
+        let eng = Engine::spawn(cfg, backend(), Box::new(move |e| {
             let _ = work.send(Work::Engine(gen, e));
         }));
         *self.engine_tx.lock().unwrap() = Some(eng.sender());

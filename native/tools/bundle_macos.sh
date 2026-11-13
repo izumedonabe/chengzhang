@@ -10,6 +10,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/chengzhang "$APP/Contents/MacOS/chengzhang"
 cp "$ASSETS/chengzhang.icns" "$ASSETS/chengzhang-dark.icns" "$APP/Contents/Resources/"
+# MLX's precompiled kernels (the rest are compiled at first use, JIT)
+METALLIB=$(ls -t target/release/build/mlx-sys-*/out/*/mlx.metallib target/release/build/mlx-sys-*/out/build/lib/mlx.metallib 2>/dev/null | head -1)
+[ -n "$METALLIB" ] && cp "$METALLIB" "$APP/Contents/Resources/mlx.metallib"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

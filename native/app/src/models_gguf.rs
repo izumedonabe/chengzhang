@@ -1,6 +1,7 @@
 //! Model catalog shown in the app and downloads (GGUF files from Hugging Face).
 //! Downloads use the system `curl` (present on macOS and Windows 10+), so the app
 //! carries no HTTP/TLS stack of its own.
+use cz_core::backend::{AsrSpec, LlmSpec};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -61,6 +62,24 @@ pub const LLM: &[Model] = &[
         recommended: false,
     },
 ];
+
+pub const DEFAULT_ASR: &str = "ggml-org/Qwen3-ASR-0.6B-GGUF";
+pub const DEFAULT_LLM: &str = "unsloth/Qwen3.5-4B-GGUF";
+
+pub fn default_hub() -> PathBuf {
+    crate::store::app_dir().join("gguf")
+}
+
+pub fn asr_spec(dir: &Path, id: &str) -> Option<AsrSpec> {
+    let m = find(id).filter(|m| m.files.len() == 2 && is_downloaded(dir, id))?;
+    let p = paths(dir, m);
+    Some(AsrSpec { model: p[0].clone(), mmproj: p[1].clone() })
+}
+
+pub fn llm_spec(dir: &Path, id: &str) -> Option<LlmSpec> {
+    let m = find(id).filter(|m| !m.files.is_empty() && is_downloaded(dir, id))?;
+    Some(LlmSpec { model: paths(dir, m)[0].clone(), n_ctx: 2560 })
+}
 
 pub fn find(id: &str) -> Option<&'static Model> {
     ASR.iter().chain(LLM.iter()).find(|m| m.id == id)

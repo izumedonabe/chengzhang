@@ -9,8 +9,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const DEFAULT_ASR: &str = "ggml-org/Qwen3-ASR-0.6B-GGUF";
-pub const DEFAULT_LLM: &str = "unsloth/Qwen3.5-4B-GGUF";
+use crate::models::{DEFAULT_ASR, DEFAULT_LLM};
 const TYPING_CPM: f64 = 50.0; // rough Chinese typing speed, for "time saved"
 
 pub fn defaults() -> Map<String, Value> {
@@ -57,12 +56,16 @@ impl Store {
             let _ = fs::write(s.dict_path(), "# 个人词典：每行一个词，同时用于语音识别和润色。\n");
         }
         if !s.settings_path().exists() {
-            // carry over preferences from the Python app (not its MLX model ids)
+            // carry over preferences from the Python app; its model ids only where we know them
             if let Ok(Value::Object(mut old)) = fs::read_to_string(s.root.join("settings.json"))
                 .map(|t| serde_json::from_str(&t).unwrap_or(Value::Null))
             {
-                old.remove("asr_model");
-                old.remove("llm_model");
+                for k in ["asr_model", "llm_model"] {
+                    let known = old.get(k).and_then(|v| v.as_str()).map(|id| crate::models::find(id).is_some()).unwrap_or(false);
+                    if !known {
+                        old.remove(k);
+                    }
+                }
                 let _ = s.write_settings(&old);
             }
         }
@@ -79,7 +82,7 @@ impl Store {
         self.root.join("history.jsonl")
     }
     pub fn models_dir(&self) -> PathBuf {
-        self.root.join("gguf")
+        crate::models::default_hub()
     }
 
     // ------------------------------------------------------------------ settings

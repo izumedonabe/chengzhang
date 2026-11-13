@@ -172,7 +172,7 @@ fn open(device: &Option<String>, sh: &Arc<Shared>, name: &Arc<Mutex<String>>) ->
     let cfg = dev.default_input_config().map_err(|e| e.to_string())?;
     let rate = cfg.sample_rate().0;
     let channels = cfg.channels() as usize;
-    let mut resampler = if rate != 16000 { cz_llama::Resampler::new(rate, 16000) } else { None };
+    let mut resampler = (rate != 16000).then(|| cz_core::resample::Resampler::new(rate, 16000));
     let sh2 = sh.clone();
     let preroll_blocks = 16usize; // ≈ 0.5 s of 32 ms blocks
     let mut deliver = move |mono: &[f32]| {

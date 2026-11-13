@@ -24,3 +24,7 @@ opt-level = 3
 opt-level = 3
 [profile.release.package.earshot]
 opt-level = 3
+
+# mlx-sys with MLX's CPU backend disabled (see third_party/mlx-sys/build.rs)
+[patch.crates-io]
+mlx-sys = { path = "third_party/mlx-sys" }

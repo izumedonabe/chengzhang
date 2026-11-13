@@ -9,3 +9,6 @@ description = "Feed WAV files through the engine in real time and report latency
 [dependencies]
 cz-core = { path = "../cz-core" }
 cz-llama = { path = "../cz-llama" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cz-mlx = { path = "../cz-mlx" }

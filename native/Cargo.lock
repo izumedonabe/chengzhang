@@ -345,6 +345,7 @@ dependencies = [
  "cpal",
  "cz-core",
  "cz-llama",
+ "cz-mlx",
  "cz-platform",
  "serde_json",
  "tauri",
@@ -615,6 +616,7 @@ version = "0.2.0"
 dependencies = [
  "cz-core",
  "cz-llama",
+ "cz-mlx",
 ]
 
 [[package]]
@@ -2021,8 +2023,6 @@ dependencies = [
 [[package]]
 name = "mlx-sys"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da965f83ce211b80f9b681d9bbd6fa625fe6bb2e659ba7bc55dd95eea8d3b028"
 dependencies = [
  "bindgen",
  "cc",

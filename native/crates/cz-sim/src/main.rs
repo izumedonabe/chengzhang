@@ -28,18 +28,35 @@ fn main() {
         gen_test(&dir, slots.parse().unwrap());
         return;
     }
-    let asr = AsrSpec {
-        model: dir.join("Qwen3-ASR-0.6B-Q8_0.gguf"),
-        mmproj: dir.join("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf"),
+    // CZ_BACKEND=llama: llama.cpp + GGUF (the Windows path); default on macOS: MLX
+    let use_llama = !cfg!(target_os = "macos") || std::env::var("CZ_BACKEND").map(|b| b == "llama").unwrap_or(false);
+    let hf = |repo: &str| -> PathBuf {
+        let d = PathBuf::from(std::env::var("HOME").unwrap()).join(".cache/huggingface/hub")
+            .join(format!("models--{}", repo.replace('/', "--"))).join("snapshots");
+        std::fs::read_dir(&d).ok().and_then(|mut r| r.next()).and_then(|x| x.ok()).map(|x| x.path()).unwrap_or(d)
     };
-    let llm = (!no_llm).then(|| LlmSpec { model: dir.join("Qwen3.5-4B-Q4_K_M.gguf"), n_ctx: 2560 });
+    let (asr, llm) = if use_llama {
+        (AsrSpec { model: dir.join("Qwen3-ASR-0.6B-Q8_0.gguf"), mmproj: dir.join("mmproj-Qwen3-ASR-0.6B-Q8_0.gguf") },
+         (!no_llm).then(|| LlmSpec { model: dir.join("Qwen3.5-4B-Q4_K_M.gguf"), n_ctx: 2560 }))
+    } else {
+        (AsrSpec { model: hf("mlx-community/Qwen3-ASR-0.6B-8bit"), mmproj: PathBuf::new() },
+         (!no_llm).then(|| LlmSpec { model: hf("mlx-community/Qwen3.5-4B-MLX-4bit"), n_ctx: 0 }))
+    };
+    let backend: Arc<dyn cz_core::backend::Backend> = if use_llama {
+        Arc::new(cz_llama::LlamaBackend)
+    } else {
+        #[cfg(target_os = "macos")]
+        { Arc::new(cz_mlx::backend::MlxBackend) }
+        #[cfg(not(target_os = "macos"))]
+        { unreachable!() }
+    };
     let mut cfg = Config::new(asr, llm);
     cfg.dictionary = dict;
     cfg.translate_lang = translate.clone();
 
     let (tx, rx) = channel();
     let t_load = Instant::now();
-    let engine = Engine::spawn(cfg, Arc::new(cz_llama::LlamaBackend), Box::new(move |e| {
+    let engine = Engine::spawn(cfg, backend, Box::new(move |e| {
         let _ = tx.send(e);
     }));
     loop {

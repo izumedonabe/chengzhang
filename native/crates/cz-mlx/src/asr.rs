@@ -7,7 +7,7 @@ use crate::tokenizer::Tokenizer;
 use crate::weights::{QLinear, Weights};
 use mlx_rs::fast;
 use mlx_rs::ops::{self, indexing::argmax_axis};
-use mlx_rs::{Array, Dtype};
+use mlx_rs::Array;
 use std::path::Path;
 
 const SR: usize = 16000;
@@ -148,7 +148,7 @@ impl Encoder {
     fn load(w: &mut Weights, cfg: &serde_json::Value) -> R<Encoder> {
         let a = &cfg["audio_config"];
         let d = a["d_model"].as_i64().unwrap_or(896) as i32;
-        let mut ln = |w: &mut Weights, p: &str| -> R<(Array, Array)> { Ok((w.take(&format!("{p}.weight"))?, w.take(&format!("{p}.bias"))?)) };
+        let ln = |w: &mut Weights, p: &str| -> R<(Array, Array)> { Ok((w.take(&format!("{p}.weight"))?, w.take(&format!("{p}.bias"))?)) };
         let mut convs = vec![];
         for i in 1..=3 {
             convs.push((w.take(&format!("audio_tower.conv2d{i}.weight"))?, w.take(&format!("audio_tower.conv2d{i}.bias"))?));
@@ -409,8 +409,12 @@ impl Qwen3Asr {
         if pcm.len() < HOP * 2 {
             return Ok(String::new());
         }
+        let prof = std::env::var("CZ_ASR_PROF").is_ok();
+        let t0 = std::time::Instant::now();
         let feats = self.mel.features(pcm)?;
+        if prof { mlx_rs::transforms::eval([&feats]).map_err(e)?; eprintln!("  asr: mel {:?}", t0.elapsed()); }
         let audio = self.enc.forward(&feats)?;
+        if prof { mlx_rs::transforms::eval([&audio]).map_err(e)?; eprintln!("  asr: +encoder {:?}", t0.elapsed()); }
         let sys = if context.is_empty() { String::new() } else { format!("{context}\n") };
         let before = self.tok.encode(&format!("<|im_start|>system\n{sys}<|im_end|>\n<|im_start|>user\n<|audio_start|>"), true);
         let prefix = language.map(|l| format!("language {l}<asr_text>")).unwrap_or_default();
@@ -425,6 +429,7 @@ impl Qwen3Asr {
         offset += x.shape()[1];
         let mut y = self.dec.next_token(&h)?;
         mlx_rs::transforms::async_eval([&y]).map_err(e)?;
+        if prof { mlx_rs::transforms::eval([&y]).map_err(e)?; eprintln!("  asr: +prefill {:?}", t0.elapsed()); }
         let mut out: Vec<u32> = vec![];
         for _ in 0..max_tokens {
             let emb = self.dec.embed.embed(&y.reshape(&[1, 1]).map_err(e)?)?;
@@ -439,6 +444,7 @@ impl Qwen3Asr {
             out.push(id);
             y = ny;
         }
+        if prof { eprintln!("  asr: +decode {} tok {:?}", out.len(), t0.elapsed()); }
         let text = self.tok.decode(&out);
         let text = match (language, text.find("<asr_text>")) {
             (None, Some(p)) => text[p + "<asr_text>".len()..].to_string(),

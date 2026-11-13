@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod engine;
 pub mod prompts;
+pub mod resample;
 pub mod text;
 pub mod vad;
 pub mod wav;

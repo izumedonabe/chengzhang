@@ -18,6 +18,8 @@ pub fn defaults() -> Map<String, Value> {
         "llm_model": DEFAULT_LLM,             // "" = no polishing
         "hotkey": {"kind": "modifier", "keycode": 61},
         "hotkey_mode": "hold",                 // hold | toggle
+        // fix the last dictation in place, then press this: learn what was changed
+        "learn_hotkey": {"kind": "key", "keycode": 8, "mods": ["control", "option"], "name": "C"},
         "translate_lang": "英文",
         "language": "Chinese",                 // ASR language; "auto" = detect
         "post_roll_ms": 300,
@@ -81,6 +83,9 @@ impl Store {
     fn history_path(&self) -> PathBuf {
         self.root.join("history.jsonl")
     }
+    fn corrections_path(&self) -> PathBuf {
+        self.root.join("corrections.json")
+    }
     pub fn models_dir(&self) -> PathBuf {
         crate::models::default_hub()
     }
@@ -139,6 +144,73 @@ impl Store {
         clean
     }
 
+    /// Add words that aren't in the dictionary yet; returns the ones added.
+    pub fn add_words(&self, new: &[String]) -> Vec<String> {
+        let _g = self.lock.lock().unwrap();
+        let mut words = self.dictionary();
+        let added: Vec<String> = new.iter().filter(|w| !words.contains(w)).cloned().collect();
+        if !added.is_empty() {
+            words.extend(added.iter().cloned());
+            self.set_dictionary(&words);
+        }
+        added
+    }
+
+    // ------------------------------------------------------------------ learned corrections
+
+    /// [{"wrong", "right", "n", "ts"}], most recent first.
+    pub fn corrections(&self) -> Vec<Map<String, Value>> {
+        match fs::read_to_string(self.corrections_path()).map(|t| serde_json::from_str(&t)) {
+            Ok(Ok(Value::Array(v))) => v.into_iter().filter_map(|x| match x {
+                Value::Object(o) => Some(o),
+                _ => None,
+            }).collect(),
+            _ => vec![],
+        }
+    }
+
+    pub fn correction_pairs(&self) -> Vec<(String, String)> {
+        let f = |e: &Map<String, Value>, k: &str| e.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        self.corrections().iter().map(|e| (f(e, "wrong"), f(e, "right"))).filter(|(w, r)| !w.is_empty() && !r.is_empty()).collect()
+    }
+
+    fn write_corrections(&self, v: &[Map<String, Value>]) {
+        let arr = Value::Array(v.iter().cloned().map(Value::Object).collect());
+        let _ = fs::write(self.corrections_path(), serde_json::to_string_pretty(&arr).unwrap());
+    }
+
+    /// Remember (wrong, right) pairs. A pair that undoes an earlier one (the user changed
+    /// "成章" back to "成长") deletes that one instead. Returns whether anything changed.
+    pub fn learn_pairs(&self, pairs: &[(String, String)]) -> bool {
+        if pairs.is_empty() {
+            return false;
+        }
+        let _g = self.lock.lock().unwrap();
+        let mut all = self.corrections();
+        let is = |e: &Map<String, Value>, k: &str, v: &str| e.get(k).and_then(|x| x.as_str()) == Some(v);
+        for (w, r) in pairs {
+            if let Some(i) = all.iter().position(|e| is(e, "wrong", r) && is(e, "right", w)) {
+                all.remove(i);
+                continue;
+            }
+            let n = match all.iter().position(|e| is(e, "wrong", w)) {
+                Some(i) => all.remove(i).get("n").and_then(|v| v.as_u64()).unwrap_or(1) + 1,
+                None => 1,
+            };
+            all.insert(0, json!({"wrong": w, "right": r, "n": n, "ts": now()}).as_object().unwrap().clone());
+        }
+        all.truncate(200);
+        self.write_corrections(&all);
+        true
+    }
+
+    pub fn delete_correction(&self, wrong: &str) {
+        let _g = self.lock.lock().unwrap();
+        let mut all = self.corrections();
+        all.retain(|e| e.get("wrong").and_then(|v| v.as_str()) != Some(wrong));
+        self.write_corrections(&all);
+    }
+
     // ------------------------------------------------------------------ history
 
     pub fn add(&self, mut entry: Map<String, Value>) -> Map<String, Value> {
@@ -175,6 +247,27 @@ impl Store {
             .skip(offset)
             .take(limit)
             .collect()
+    }
+
+    /// Set one field of a history entry; returns the updated entry.
+    pub fn update_entry(&self, id: &str, key: &str, value: Value) -> Option<Map<String, Value>> {
+        let _g = self.lock.lock().unwrap();
+        let mut found = None;
+        let body: String = self
+            .all()
+            .into_iter()
+            .map(|mut e| {
+                if e.get("id").and_then(|v| v.as_str()) == Some(id) {
+                    e.insert(key.to_string(), value.clone());
+                    found = Some(e.clone());
+                }
+                Value::Object(e).to_string() + "\n"
+            })
+            .collect();
+        if found.is_some() {
+            let _ = fs::write(self.history_path(), body);
+        }
+        found
     }
 
     pub fn delete(&self, id: &str) {

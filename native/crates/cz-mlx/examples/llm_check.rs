@@ -15,7 +15,7 @@ fn main() {
     }
     eprintln!("tokenizer {:?}, model graph {:?}", t_tok, t0.elapsed());
     for (round, text) in std::iter::once(&a[2]).chain(a[2..].iter()).enumerate() {
-    let prompt = format!("{}{}{}", cz_core::prompts::prefix(&[], None), text, cz_core::prompts::SUFFIX);
+    let prompt = format!("{}{}{}", cz_core::prompts::prefix(&[], &[], None), text, cz_core::prompts::SUFFIX);
     let ids = tok.encode(&prompt, true);
     println!("prompt tokens: {} first {:?} last {:?}", ids.len(), &ids[..6], &ids[ids.len() - 6..]);
         let mut cache = model.make_cache();

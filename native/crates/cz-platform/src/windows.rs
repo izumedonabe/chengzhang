@@ -21,7 +21,7 @@ pub fn hotkey_label(h: &Hotkey) -> String {
 pub struct HotkeyTap;
 
 impl HotkeyTap {
-    pub fn install(_spec: Hotkey, _cb: HotkeyCallback) -> Option<(HotkeyTap, &'static str)> {
+    pub fn install(_spec: Hotkey, _learn: Option<Hotkey>, _cb: HotkeyCallback) -> Option<(HotkeyTap, &'static str)> {
         None
     }
     pub fn set_active(&self, _on: bool) {}
@@ -29,6 +29,10 @@ impl HotkeyTap {
 }
 
 pub fn copy_text(_text: &str) {}
+/// TODO(Windows): UI Automation (TextPattern selection / ValuePattern), else Ctrl+C.
+pub fn grab_text() -> Option<(String, &'static str)> {
+    None
+}
 pub fn paste_text(_text: &str) -> bool {
     false
 }

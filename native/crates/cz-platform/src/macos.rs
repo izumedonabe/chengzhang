@@ -33,6 +33,13 @@ extern "C" {
     fn CFRelease(p: CFTypeRef);
     static kCFRunLoopCommonModes: CFTypeRef;
     fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
+    fn AXUIElementCreateSystemWide() -> CFTypeRef;
+    fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
+    fn AXUIElementCopyAttributeValue(el: CFTypeRef, attr: CFTypeRef, out: *mut CFTypeRef) -> i32;
+    fn AXUIElementSetMessagingTimeout(el: CFTypeRef, secs: f32) -> i32;
+    fn CFGetTypeID(p: CFTypeRef) -> usize;
+    fn CFStringGetTypeID() -> usize;
+    fn CGEventSourceFlagsState(state: i32) -> u64;
 }
 
 const KEY_DOWN: u32 = 10;
@@ -117,8 +124,10 @@ pub fn hotkey_label(h: &Hotkey) -> String {
 
 struct TapState {
     spec: Hotkey,
+    learn: Option<Hotkey>,
     cb: HotkeyCallback,
     down: AtomicBool,
+    learn_down: AtomicBool,
     active: AtomicBool,
     paused: AtomicBool,
     tap: std::cell::Cell<CFTypeRef>,
@@ -157,6 +166,21 @@ fn handle(st: &TapState, kind: u32, code: u16, flags: u64, repeat: bool) -> bool
         st.down.store(false, Ordering::Relaxed);
         (st.cb)(HotkeyEvent::Cancel);
         return true;
+    }
+    // the correction hotkey: exactly its modifiers, fires once per press
+    if let Some(l) = st.learn.as_ref().filter(|l| l.keycode == code && kind != FLAGS_CHANGED) {
+        if kind == KEY_DOWN {
+            let want = l.mods.iter().fold(0, |a, m| a | mod_flag(m));
+            if flags & (F_CONTROL | F_OPTION | F_COMMAND | F_SHIFT) == want {
+                if !repeat {
+                    st.learn_down.store(true, Ordering::Relaxed);
+                    (st.cb)(HotkeyEvent::Learn);
+                }
+                return true;
+            }
+        } else if kind == KEY_UP && st.learn_down.swap(false, Ordering::Relaxed) {
+            return true;
+        }
     }
     if spec.kind == "modifier" {
         if kind != FLAGS_CHANGED || code != spec.keycode {
@@ -200,11 +224,13 @@ fn handle(st: &TapState, kind: u32, code: u16, flags: u64, repeat: bool) -> bool
 }
 
 impl HotkeyTap {
-    pub fn install(spec: Hotkey, cb: HotkeyCallback) -> Option<(HotkeyTap, &'static str)> {
+    pub fn install(spec: Hotkey, learn: Option<Hotkey>, cb: HotkeyCallback) -> Option<(HotkeyTap, &'static str)> {
         let state = Box::new(TapState {
             spec,
+            learn: learn.filter(|l| l.kind == "key"),
             cb,
             down: AtomicBool::new(false),
+            learn_down: AtomicBool::new(false),
             active: AtomicBool::new(false),
             paused: AtomicBool::new(false),
             tap: std::cell::Cell::new(std::ptr::null()),
@@ -279,18 +305,12 @@ pub fn copy_text(text: &str) {
     }
 }
 
-pub fn paste_text(text: &str) -> bool {
-    if !accessibility_trusted(false) {
-        copy_text(text);
-        return false;
-    }
-    let previous = pb_string();
-    copy_text(text);
-    let change = pb_change_count();
+/// Press and release ⌘ + `keycode` in the frontmost app.
+fn post_command_key(keycode: u16) {
     unsafe {
         let src = CGEventSourceCreate(1); // HID system state
         for down in [true, false] {
-            let ev = CGEventCreateKeyboardEvent(src, 9, down); // 9 = "v"
+            let ev = CGEventCreateKeyboardEvent(src, keycode, down);
             CGEventSetFlags(ev, F_COMMAND);
             CGEventPost(0, ev);
             CFRelease(ev);
@@ -299,6 +319,17 @@ pub fn paste_text(text: &str) -> bool {
             CFRelease(src);
         }
     }
+}
+
+pub fn paste_text(text: &str) -> bool {
+    if !accessibility_trusted(false) {
+        copy_text(text);
+        return false;
+    }
+    let previous = pb_string();
+    copy_text(text);
+    let change = pb_change_count();
+    post_command_key(9); // "v"
     if let Some(prev) = previous {
         // put the user's clipboard back, unless someone else touched it meanwhile
         std::thread::spawn(move || {
@@ -309,6 +340,115 @@ pub fn paste_text(text: &str) -> bool {
         });
     }
     true
+}
+
+// ----------------------------------------------------------------------------- reading the user's text
+
+/// Copy a string-valued attribute of an AX element.
+unsafe fn ax_string(el: CFTypeRef, attr: &str) -> Option<String> {
+    let key = ns(attr);
+    let mut v: CFTypeRef = std::ptr::null();
+    let err = AXUIElementCopyAttributeValue(el, objc2::rc::Retained::as_ptr(&key) as CFTypeRef, &mut v);
+    if err != 0 || v.is_null() {
+        return None;
+    }
+    let s = (CFGetTypeID(v) == CFStringGetTypeID()).then(|| (*(v as *const NSString)).to_string());
+    CFRelease(v);
+    s
+}
+
+/// Copy an element-valued attribute (caller releases). Null on failure.
+unsafe fn ax_element(el: CFTypeRef, attr: &str) -> CFTypeRef {
+    let key = ns(attr);
+    let mut v: CFTypeRef = std::ptr::null();
+    let err = AXUIElementCopyAttributeValue(el, objc2::rc::Retained::as_ptr(&key) as CFTypeRef, &mut v);
+    if err != 0 { std::ptr::null() } else { v }
+}
+
+fn frontmost_pid() -> Option<i32> {
+    unsafe {
+        let ws: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let app: *mut AnyObject = msg_send![ws, frontmostApplication];
+        if app.is_null() {
+            return None;
+        }
+        let pid: i32 = msg_send![app, processIdentifier];
+        (pid > 0).then_some(pid)
+    }
+}
+
+/// The focused text field's selection, else its whole value. Native apps, WeChat, most
+/// text views; Electron apps and some browsers don't expose their fields this way.
+fn ax_focused_text() -> Option<(String, &'static str)> {
+    unsafe {
+        // ask the frontmost app for its focused element; the system-wide element is the
+        // fallback (it answers "cannot complete" for some apps)
+        let mut el: CFTypeRef = std::ptr::null();
+        if let Some(pid) = frontmost_pid() {
+            let app = AXUIElementCreateApplication(pid);
+            if !app.is_null() {
+                AXUIElementSetMessagingTimeout(app, 0.5); // a hung app must not hang us
+                el = ax_element(app, "AXFocusedUIElement");
+                CFRelease(app);
+            }
+        }
+        if el.is_null() {
+            let sys = AXUIElementCreateSystemWide();
+            if !sys.is_null() {
+                AXUIElementSetMessagingTimeout(sys, 0.5);
+                let app = ax_element(sys, "AXFocusedApplication");
+                if !app.is_null() {
+                    el = ax_element(app, "AXFocusedUIElement");
+                    CFRelease(app);
+                }
+                if el.is_null() {
+                    el = ax_element(sys, "AXFocusedUIElement");
+                }
+                CFRelease(sys);
+            }
+        }
+        if el.is_null() {
+            return None;
+        }
+        let nonblank = |s: &String| !s.trim().is_empty();
+        let r = ax_string(el, "AXSelectedText").filter(nonblank).map(|s| (s, "selection"))
+            .or_else(|| ax_string(el, "AXValue").filter(nonblank).map(|s| (s, "field")));
+        CFRelease(el);
+        r
+    }
+}
+
+/// The selection, via a synthetic ⌘C; the user's clipboard text is put back afterwards.
+fn copy_selection() -> Option<String> {
+    if !accessibility_trusted(false) {
+        return None;
+    }
+    // the correction hotkey's modifiers may still be down; ⌃⌥⌘C isn't a copy everywhere
+    let t0 = std::time::Instant::now();
+    while unsafe { CGEventSourceFlagsState(1) } & (F_CONTROL | F_OPTION | F_SHIFT | F_COMMAND) != 0
+        && t0.elapsed().as_millis() < 1000
+    {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    let previous = pb_string();
+    let before = pb_change_count();
+    post_command_key(8); // "c"
+    let t0 = std::time::Instant::now();
+    while pb_change_count() == before && t0.elapsed().as_millis() < 400 {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    if pb_change_count() == before {
+        return None; // nothing selected
+    }
+    let got = pb_string();
+    if let Some(prev) = previous {
+        copy_text(&prev);
+    }
+    got.filter(|s| !s.trim().is_empty())
+}
+
+pub fn grab_text() -> Option<(String, &'static str)> {
+    ax_focused_text().or_else(|| copy_selection().map(|s| (s, "copy")))
 }
 
 // ----------------------------------------------------------------------------- permissions & misc

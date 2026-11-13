@@ -93,7 +93,8 @@
     else if (s === "empty") setText("没有听到声音", "检查麦克风，或说得再靠近一点");
     else if (s === "waking") setText("正在唤醒模型", "几秒后再按一次");
     else if (s === "loading") setText("模型还在加载", p && p.progress != null ? `${Math.round(p.progress * 100)}%，日出前稍等一下` : "稍等一下");
-    else if (s === "error") setText("没能完成", p || "");
+    else if (s === "learned") setText(p.title, p.detail || "");
+    else if (s === "error") p && typeof p === "object" ? setText(p.title, p.detail || "") : setText("没能完成", p || "");
   };
 
   window.hudLevel = (v) => {

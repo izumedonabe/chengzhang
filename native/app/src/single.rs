@@ -71,5 +71,10 @@ pub fn show_other(location: &str) {
         let _ = std::process::Command::new("/usr/bin/open").arg(location).status();
     }
     #[cfg(not(target_os = "macos"))]
-    let _ = location; // TODO(Windows): find the main window and SetForegroundWindow
+    {
+        // the running copy's main window (hidden if its close button was pressed: on
+        // Windows there is no Dock icon, so starting 成章 again is how you get it back)
+        let _ = location;
+        cz_platform::bring_to_front("成章");
+    }
 }

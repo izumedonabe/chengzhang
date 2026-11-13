@@ -52,3 +52,6 @@ pub fn set_app_icon(_path: &str) {}
 pub fn open_url(_url: &str) -> bool {
     false // TODO(Windows): ShellExecuteW(NULL, "open", url, …)
 }
+pub fn bring_to_front(_title: &str) -> bool {
+    false
+}

@@ -418,3 +418,18 @@ pub fn open_url(url: &str) -> bool {
     };
     r as isize > 32
 }
+
+/// Show and focus the top-level window with exactly this title (another running copy's
+/// main window, possibly hidden after its close button was pressed).
+pub fn bring_to_front(title: &str) -> bool {
+    let t = wide(title);
+    unsafe {
+        let hwnd = FindWindowW(std::ptr::null(), t.as_ptr());
+        if hwnd.is_null() {
+            return false;
+        }
+        ShowWindow(hwnd, SW_SHOW);
+        ShowWindow(hwnd, SW_RESTORE);
+        SetForegroundWindow(hwnd) != 0
+    }
+}

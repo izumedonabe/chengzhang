@@ -165,3 +165,8 @@ pub fn set_app_icon(path: &str) {
 pub fn open_url(url: &str) -> bool {
     imp::open_url(url)
 }
+
+/// Show and focus another process's top-level window by its exact title (Windows).
+pub fn bring_to_front(title: &str) -> bool {
+    imp::bring_to_front(title)
+}

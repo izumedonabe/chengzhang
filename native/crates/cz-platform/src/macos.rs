@@ -429,3 +429,8 @@ pub fn open_url(url: &str) -> bool {
         ok.as_bool()
     }
 }
+
+/// macOS brings a running app forward through LaunchServices instead (see app/single.rs).
+pub fn bring_to_front(_title: &str) -> bool {
+    false
+}

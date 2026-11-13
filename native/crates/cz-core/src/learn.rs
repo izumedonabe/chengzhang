@@ -1,10 +1,15 @@
 //! Learning from the user's corrections. After a dictation is pasted the user fixes it in
 //! place and presses the correction hotkey. We diff what was pasted against what is there
-//! now and keep the replaced pieces ("read is" → "Redis", "成长" → "成章"):
-//!   - the pairs go into the polishing prompt, and pairs with English in them are also
-//!     replaced directly in later transcripts;
-//!   - the corrected spelling of terms goes into the personal dictionary, which biases
-//!     Qwen3-ASR itself.
+//! now and look at each replaced piece ("read is" → "Redis", "张山峰" → "张三丰").
+//!
+//! Only one thing is learned: the corrected spelling of names and terms, which goes into
+//! the personal dictionary. The dictionary nudges Qwen3-ASR and the polishing model toward
+//! that spelling but never forces a replacement, so a wrong guess costs little.
+//!
+//! A diff can't tell a misheard word from a change of mind ("Monday" → "Tuesday",
+//! "张伟" → "李娜"), so a replacement only yields a term when it plausibly *is* a
+//! mishearing: the two sides sound alike, and it isn't a number, date or weekday that
+//! was simply changed.
 
 use crate::text::norm;
 use std::collections::HashSet;
@@ -260,79 +265,123 @@ pub fn learn(orig: &str, edited: &str) -> Option<Learned> {
 
 /// The corrected spelling, when it looks like a name or a term: English words that
 /// weren't already there ("Redis", "PostgreSQL"), or a Chinese fix of two or more
-/// characters ("张三丰"). A one-character Chinese fix ("周二"→"周三") isn't a term.
+/// characters ("三丰"). A one-character Chinese fix ("长"→"章") isn't a term.
 fn term_candidates(wrong: &str, right: &str, grown: bool) -> Vec<String> {
+    if !mishearing(wrong, right) {
+        return vec![];
+    }
     let mut out = vec![];
     if has_ascii_word(right) {
         let keep = |c: char| word(c) || " +#.-_".contains(c);
         for run in right.split(|c: char| !keep(c)) {
             let run = run.trim_matches(|c: char| c == ' ' || c == '.' || c == '-' || c == '_');
-            if run.chars().count() >= 2 && run.chars().any(|c| c.is_ascii_alphabetic()) && !wrong.contains(run) {
+            if run.chars().count() >= 2 && run.chars().any(|c| c.is_ascii_alphabetic())
+                && !wrong.contains(run) && !calendar_word(run) {
                 out.push(run.to_string());
             }
         }
     } else if !grown {
         let n = right.chars().count();
-        if (2..=8).contains(&n) && right.chars().all(|c| is_cjk(c) || c.is_alphanumeric()) {
+        if (2..=8).contains(&n) && right.chars().all(|c| is_cjk(c) || c.is_alphanumeric()) && !right.chars().all(numeral) {
             out.push(right.to_string());
         }
     }
     out
 }
 
-// ----------------------------------------------------------------------------- applying
+// ----------------------------------------------------------------------------- was it misheard?
 
-/// A pair whose wrong side has English in it is unambiguous ("read is" is never what the
-/// user meant), so it's replaced directly; a Chinese one ("成长"→"成章") depends on the
-/// sentence and is left to the polishing model.
-pub fn is_literal(p: &Pair) -> bool {
-    has_ascii_word(&p.0)
+const CJK_NUMERALS: &str = "〇零一二两三四五六七八九十百千万亿半";
+const CALENDAR: &[&str] = &[
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "mon", "tue", "tues", "wed", "thu", "thur", "thurs", "fri", "sat", "sun",
+    "january", "february", "march", "april", "may", "june", "july", "august", "september",
+    "october", "november", "december", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep",
+    "sept", "oct", "nov", "dec", "today", "tomorrow", "yesterday", "morning", "afternoon",
+    "evening", "tonight", "am", "pm",
+];
+
+fn numeral(c: char) -> bool {
+    c.is_ascii_digit() || CJK_NUMERALS.contains(c)
 }
 
-/// Replace learned mistakes in a transcript, in one left-to-right pass (no cascades).
-/// English is matched case-insensitively on word boundaries. `chinese_too` also replaces
-/// Chinese pairs — for when no polishing model is there to judge them.
-pub fn apply(text: &str, pairs: &[Pair], chinese_too: bool) -> String {
-    let mut rules: Vec<(String, &str, bool)> = pairs
-        .iter()
-        .filter(|p| !p.0.is_empty() && (chinese_too || is_literal(p)))
-        .map(|p| (p.0.to_ascii_lowercase(), p.1.as_str(), is_literal(p)))
-        .collect();
-    if rules.is_empty() {
-        return text.to_string();
+fn calendar_word(w: &str) -> bool {
+    CALENDAR.contains(&w.to_ascii_lowercase().as_str())
+}
+
+/// A replacement that plausibly fixes a misheard word rather than changing the content.
+fn mishearing(wrong: &str, right: &str) -> bool {
+    // numbers, times and dates that were changed: "周二"→"周三", "三万"→"五万", "3点"→"4点"
+    let only_w: Vec<char> = wrong.chars().filter(|c| c.is_alphanumeric() && !right.contains(*c)).collect();
+    let only_r: Vec<char> = right.chars().filter(|c| c.is_alphanumeric() && !wrong.contains(*c)).collect();
+    if !only_w.is_empty() && !only_r.is_empty() && only_w.iter().all(|&c| numeral(c)) && only_r.iter().all(|&c| numeral(c)) {
+        return false;
     }
-    rules.sort_by_key(|r| std::cmp::Reverse(r.0.len()));
-    let low = text.to_ascii_lowercase(); // same byte offsets as `text`
-    let mut out = String::with_capacity(text.len());
-    let mut i = 0;
-    'scan: while i < text.len() {
-        for (w, r, literal) in &rules {
-            if !low[i..].starts_with(w.as_str()) {
-                continue;
+    // one weekday or month for another: "Monday"→"Tuesday"
+    let words = |s: &str| s.split(|c: char| !c.is_ascii_alphabetic()).filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    if words(wrong).iter().any(|w| calendar_word(w)) && words(right).iter().any(|w| calendar_word(w)) {
+        return false;
+    }
+    sounds_alike(wrong, right)
+}
+
+/// Pronunciation as plain letters: pinyin for Chinese characters (with the usual accent
+/// mergers zh/z, ch/c, sh/s, -ng/-n), lowercase for Latin letters and digits.
+fn phonetic(s: &str) -> String {
+    use pinyin::ToPinyin;
+    let mut out = String::new();
+    for c in s.chars() {
+        if is_cjk(c) {
+            if let Some(p) = c.to_pinyin() {
+                let syl = p.plain().replace("zh", "z").replace("ch", "c").replace("sh", "s");
+                let syl = syl.strip_suffix('g').filter(|t| t.ends_with('n')).map(str::to_string).unwrap_or(syl);
+                out += &syl;
             }
-            if *literal {
-                let before = text[..i].chars().next_back();
-                let after = text[i + w.len()..].chars().next();
-                let wc = |c: Option<char>| c.is_some_and(word);
-                if (wc(w.chars().next()) && wc(before)) || (wc(w.chars().next_back()) && wc(after)) {
-                    continue; // inside a longer word ("rust" in "trust")
-                }
-            }
-            out.push_str(r);
-            i += w.len();
-            continue 'scan;
+        } else if word(c) {
+            out.push(c.to_ascii_lowercase());
         }
-        let c = text[i..].chars().next().unwrap();
-        out.push(c);
-        i += c.len_utf8();
     }
     out
 }
 
-/// The transcript contains a learned Chinese mistake: worth a pass through the
-/// polishing model even when it's short enough for the fast path.
-pub fn mentions(text: &str, pairs: &[Pair]) -> bool {
-    pairs.iter().any(|p| !is_literal(p) && !p.0.is_empty() && text.contains(p.0.as_str()))
+fn skeleton(s: &str) -> String {
+    s.chars().filter(|c| !"aeiouyü".contains(*c)).collect()
+}
+
+fn levenshtein(a: &[char], b: &[char]) -> usize {
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            cur.push((prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + (ca != cb) as usize));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+fn closeness(a: &str, b: &str) -> f32 {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let longest = a.len().max(b.len());
+    if longest == 0 {
+        return 1.0;
+    }
+    1.0 - levenshtein(&a, &b) as f32 / longest as f32
+}
+
+/// "read is"/"Redis", "千万"/"Qwen", "山峰"/"三丰" sound alike; "Monday"/"Tuesday",
+/// "MySQL"/"PostgreSQL", "张伟"/"李娜", "很好"/"不错" don't.
+fn sounds_alike(wrong: &str, right: &str) -> bool {
+    let (a, b) = (phonetic(wrong), phonetic(right));
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    if closeness(&a, &b) >= 0.5 {
+        return true;
+    }
+    // vowels drift most between how a word is said and how it's written ("qianwan"/"qwen")
+    let (sa, sb) = (skeleton(&a), skeleton(&b));
+    sa.chars().count() >= 2 && sb.chars().count() >= 2 && closeness(&sa, &sb) >= 0.6
 }
 
 #[cfg(test)]
@@ -416,18 +465,28 @@ mod tests {
     }
 
     #[test]
-    fn apply_replaces_english_on_word_boundaries_only() {
-        let p = vec![("read is".to_string(), "Redis".to_string()), ("rust".to_string(), "Rust".to_string()),
-                     ("成长".to_string(), "成章".to_string())];
-        assert_eq!(apply("缓存用Read is，语言用rust", &p, false), "缓存用Redis，语言用Rust");
-        assert_eq!(apply("I trust it, 我在成长", &p, false), "I trust it, 我在成长");
-        assert_eq!(apply("我在成长", &p, true), "我在成章");
-        assert!(mentions("我们的成长", &p) && !mentions("用 read is", &p));
+    fn misheard_terms_are_learned() {
+        let terms = |o: &str, e: &str| learn(o, e).unwrap().terms;
+        assert_eq!(terms("缓存用的是 read is", "缓存用的是 Redis"), vec!["Redis"]);
+        assert_eq!(terms("这个千万模型挺好的", "这个 Qwen 模型挺好的"), vec!["Qwen"]);
+        assert_eq!(terms("我们后端用的是 post gray sql", "我们后端用的是 PostgreSQL"), vec!["PostgreSQL"]);
+        assert_eq!(terms("刚才张山峰说要改需求。", "刚才张三丰说要改需求。"), vec!["三丰"]);
     }
 
     #[test]
-    fn apply_does_not_cascade() {
-        let p = vec![("a b".to_string(), "c".to_string()), ("c".to_string(), "d".to_string())];
-        assert_eq!(apply("a b c", &p, false), "c d");
+    fn changes_of_mind_are_not_learned() {
+        let terms = |o: &str, e: &str| learn(o, e).unwrap().terms;
+        for (o, e) in [
+            ("Let's meet on Monday", "Let's meet on Tuesday"),
+            ("数据库就用 MySQL 吧", "数据库就用 PostgreSQL 吧"),
+            ("我们周二开会", "我们周三开会"),
+            ("下午三点见", "下午四点见"),
+            ("预算大概三万", "预算大概五万"),
+            ("预算大概三十万", "预算大概五十万"),
+            ("这个事情找张伟", "这个事情找李娜"),
+            ("这个方案很好", "这个方案不错"),
+        ] {
+            assert!(terms(o, e).is_empty(), "{o} → {e} learned {:?}", terms(o, e));
+        }
     }
 }

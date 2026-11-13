@@ -8,3 +8,4 @@ description = "成章 engine: VAD segmentation, incremental ASR -> LLM pipeline,
 
 [dependencies]
 earshot = "1.2"
+pinyin = { version = "0.10", default-features = false, features = ["plain"] }

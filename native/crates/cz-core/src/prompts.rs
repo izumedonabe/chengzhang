@@ -42,22 +42,11 @@ pub const FEWSHOT: &[(&str, &str)] = &[
     ),
 ];
 
-/// At most this many learned corrections go into the prompt (most recent first).
-pub const MAX_CORRECTIONS: usize = 40;
-
-pub fn system_prompt(dictionary: &[String], corrections: &[(String, String)], translate: Option<&str>) -> String {
+pub fn system_prompt(dictionary: &[String], translate: Option<&str>) -> String {
     let mut s = RULES.to_string();
-    let mut n = 8;
     if !dictionary.is_empty() {
-        n += 1;
-        s += &format!("\n{n}. 用户词典（专有名词、术语以此为准，发音相近时优先使用）：");
+        s += "\n9. 用户词典（专有名词、术语以此为准，发音相近时优先使用）：";
         s += &dictionary.join("、");
-    }
-    if !corrections.is_empty() {
-        n += 1;
-        s += &format!("\n{n}. 用户改正过的识别错误（箭头左边是识别结果，右边是用户要的写法；读音相近、放在句子里说得通时才替换）：");
-        let list: Vec<String> = corrections.iter().take(MAX_CORRECTIONS).map(|(w, r)| format!("{w}→{r}")).collect();
-        s += &list.join("、");
     }
     s += "\n";
     match translate {
@@ -68,8 +57,8 @@ pub fn system_prompt(dictionary: &[String], corrections: &[(String, String)], tr
 }
 
 /// Everything before the user's text: system, few-shot turns, and the user header.
-pub fn prefix(dictionary: &[String], corrections: &[(String, String)], translate: Option<&str>) -> String {
-    let mut s = format!("<|im_start|>system\n{}<|im_end|>\n", system_prompt(dictionary, corrections, translate));
+pub fn prefix(dictionary: &[String], translate: Option<&str>) -> String {
+    let mut s = format!("<|im_start|>system\n{}<|im_end|>\n", system_prompt(dictionary, translate));
     if translate.is_none() {
         // examples demonstrate same-language cleanup
         for (src, dst) in FEWSHOT {
@@ -93,12 +82,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rules_are_numbered_after_what_is_there() {
-        let c = vec![("read is".to_string(), "Redis".to_string())];
-        let s = system_prompt(&[], &c, None);
-        assert!(s.contains("\n9. 用户改正过的识别错误") && s.contains("read is→Redis"));
-        let s = system_prompt(&["成章".to_string()], &c, None);
-        assert!(s.contains("\n9. 用户词典") && s.contains("\n10. 用户改正过的识别错误"));
-        assert!(!system_prompt(&[], &[], None).contains("\n9."));
+    fn dictionary_is_rule_nine() {
+        assert!(system_prompt(&["成章".to_string()], None).contains("\n9. 用户词典（") );
+        assert!(!system_prompt(&[], None).contains("\n9."));
     }
 }

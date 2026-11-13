@@ -243,7 +243,6 @@ function mockApi() {
     { id: "a4", ts: now - 90000, app: "Cursor", text: "这个 API 的 latency 有点高，可以先加一个 cache，再看看是不是 database 的 query 太慢了。", raw: "这个API的latency有点高我觉得可以先加一个cache然后再看看是不是day to day的query太慢了", audio_s: 8.4, done_s: 0.73 },
   ];
   let dict = ["成章", "database", "README", "UI稿", "fail to pass", "pass to pass", "Redis"];
-  let pairs = [{ wrong: "read is", right: "Redis", n: 3 }, { wrong: "成长", right: "成章", n: 1 }, { wrong: "day to day", right: "database", n: 2 }];
   const settings = { asr_model: "mlx-community/Qwen3-ASR-0.6B-8bit", llm_model: "mlx-community/Qwen3.5-4B-MLX-4bit",
     hotkey: { kind: "modifier", keycode: 61 }, learn_hotkey: { kind: "key", keycode: 8, mods: ["control", "option"], name: "C" }, hotkey_mode: "hold", translate_lang: "英文", language: "Chinese", post_roll_ms: 300, fast_path: true, auto_paste: true, appearance: SHOT.get("theme") || "auto" };
   const status = { state: "loading", stage: "vad", progress: 0.02, error: null };
@@ -278,8 +277,6 @@ function mockApi() {
     copy: () => ok(true),
     dictionary: () => ok([...dict]),
     save_dictionary: (w) => ok((dict = [...new Set(w)])),
-    corrections: () => ok(pairs.map((p) => ({ ...p }))),
-    delete_correction: (w) => ok((pairs = pairs.filter((p) => p.wrong !== w)).map((p) => ({ ...p }))),
     set_learn_hotkey: (spec) => { settings.learn_hotkey = spec; return api.state(); },
     set_setting: (k, v) => { settings[k] = v; return api.state(); },
     select_model: (kind, id) => { settings[kind === "asr" ? "asr_model" : "llm_model"] = id; return api.state(); },
@@ -435,18 +432,8 @@ let words = [];
 async function loadDictionary() {
   words = await api.dictionary();
   renderWords();
-  $("#learned").hidden = !api.corrections;
-  if (api.corrections) renderPairs(await api.corrections());
-}
-function renderPairs(list) {
-  const ul = $("#pairs");
-  ul.innerHTML = "";
-  if (!list.length) ul.append(h("li", { class: "empty-state", style: "border:0;background:none;padding:0" }, "还没有"));
-  list.forEach((p) => ul.append(h("li", { title: p.n > 1 ? `改过 ${p.n} 次` : "" },
-    p.wrong, h("span", { class: "arrow" }, "→"), p.right,
-    p.n > 1 ? h("span", { class: "times" }, `×${p.n}`) : null,
-    h("button", { type: "button", "aria-label": `删除 ${p.wrong} → ${p.right}`,
-      onclick: async () => { renderPairs(await api.delete_correction(p.wrong)); toast("已删除"); } }, "×"))));
+  // the correction hotkey adds corrected names and terms to this list (native app only)
+  $("#learned").hidden = !api.set_learn_hotkey;
 }
 function renderWords(fresh) {
   const ul = $("#words");
@@ -635,7 +622,7 @@ function renderSettings() {
   seg($("#set-hotkey-mode"), [["hold", "按住说话"], ["toggle", "按一下开始，再按一下结束"]], s.hotkey_mode || "hold",
     (v) => setSetting("hotkey_mode", v, v === "toggle" ? "按一下开始，再按一下结束" : "按住说话"));
   renderHotkey();
-  $("#learn-setting").hidden = !api.set_learn_hotkey || !api.corrections;
+  $("#learn-setting").hidden = !api.set_learn_hotkey;
   if (!(recording && recording.which === "learn")) $("#learn-hotkey-now").textContent = STATE.learn_hotkey_label || "";
   seg($("#set-appearance"), [["auto", "跟随系统"], ["light", "白天"], ["dark", "夜间"]], s.appearance || "auto",
     async (v) => { await setSetting("appearance", v, v === "dark" ? "日落" : v === "light" ? "日出" : "跟随系统"); applyTheme(); });

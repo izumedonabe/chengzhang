@@ -259,7 +259,6 @@ impl Ctl {
         let lang = s_str(&s, "language");
         cfg.language = if lang == "auto" { None } else { Some(lang) };
         cfg.dictionary = self.store.dictionary();
-        cfg.corrections = self.store.correction_pairs();
         let tl = s_str(&s, "translate_lang");
         cfg.translate_lang = (!tl.is_empty()).then_some(tl);
         cfg.fast_path = s_bool(&s, "fast_path");
@@ -578,7 +577,8 @@ impl Ctl {
     // ------------------------------------------------------------------ learning from corrections
 
     /// The correction hotkey: the user fixed the last dictation in the text box. Read it
-    /// back, diff it against what we pasted, remember the misheard words.
+    /// back, diff it against what we pasted, and add the corrected names and terms to the
+    /// dictionary (see `learn`: nothing is ever replaced automatically).
     fn learn(self: &Arc<Self>) {
         if self.recording() || self.mic.capturing() {
             // the combo shares a modifier with the dictation key (⌥): that press wasn't dictation
@@ -633,20 +633,16 @@ impl Ctl {
         if let Some(e) = self.store.update_entry(&id, "corrected", json!(l.corrected)) {
             self.ui("entry", Value::Object(e));
         }
-        let learned = self.store.learn_pairs(&l.pairs);
         let added = self.store.add_words(&l.terms);
-        if learned || !added.is_empty() {
-            self.send(Command::SetLexicon { dictionary: self.store.dictionary(), corrections: self.store.correction_pairs() });
-            self.ui("lexicon", Value::Null);
-        }
-        if l.pairs.is_empty() {
-            return self.learn_note("已记下改正", "这次只是增删字词或标点，没有要学的识别错误".into(), false);
-        }
-        let mut parts: Vec<String> = l.pairs.iter().map(|(w, r)| format!("{w} → {r}")).collect();
         if !added.is_empty() {
-            parts.push(format!("词典 +{}", added.join("、")));
+            self.send(Command::SetDictionary(self.store.dictionary()));
+            self.ui("lexicon", Value::Null);
+            return self.learn_note("已加入词典", added.join("、"), false);
         }
-        self.learn_note("记住了", parts.join("，"), false);
+        if !l.terms.is_empty() {
+            return self.learn_note("词典里已经有了", l.terms.join("、"), false);
+        }
+        self.learn_note("已记下改正", "没有发现要加进词典的人名或术语".into(), false);
     }
 
     // ------------------------------------------------------------------ memory
@@ -789,12 +785,6 @@ impl Ctl {
                 let words = self.store.set_dictionary(&words);
                 self.send(Command::SetDictionary(words.clone()));
                 json!(words)
-            }
-            "corrections" => json!(self.store.corrections()),
-            "delete_correction" => {
-                self.store.delete_correction(&a_str(0));
-                self.send(Command::SetLexicon { dictionary: self.store.dictionary(), corrections: self.store.correction_pairs() });
-                json!(self.store.corrections())
             }
             "set_setting" => self.set_setting(&a_str(0), a(1)),
             "select_model" => {

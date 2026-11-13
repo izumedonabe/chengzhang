@@ -814,10 +814,24 @@ wire();
 (function about() {
   const dlg = $("#about");
   const REPO = "https://github.com/izumedonabe/chengzhang";
+  // a window onto the harbour on the home page: a copy of its baked layers, framed
+  // around the sun and its reflection (painting units; the painting is 1200 x 440)
+  function frame() {
+    const art = $("#about-art");
+    art.querySelectorAll(".vista").forEach((n) => n.remove());
+    const v = $("#vista").cloneNode(true);
+    v.removeAttribute("id");
+    v.classList.remove("tall");
+    v.classList.add("instant");
+    const k = 0.82, x0 = 545, y0 = 98;
+    v.style.cssText = `--tx:${-x0 * k}px;--ty:${-y0 * k}px;--k:${k};--near:0px;--sun-drop:0;--sun-p:1`;
+    art.prepend(v);
+  }
   async function open() {
     const info = api && api.about ? await api.about() : { version: "dev", repo: REPO, asr: "", llm: "" };
-    $("#about-version").textContent = `版本 ${info.version}`;
-    $("#about-models").textContent = [info.asr, info.llm].filter(Boolean).join("，") + (info.asr ? " 正在工作" : "");
+    frame();
+    $("#about-version").textContent = info.version;
+    $("#about-models").textContent = [info.asr, info.llm].filter(Boolean).join(" · ");
     dlg.dataset.repo = info.repo || REPO;
     dlg.showModal();
   }

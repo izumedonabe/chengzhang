@@ -251,17 +251,20 @@
 
 <!-- About: opened from the seal on the painting, the way a painter's seal names the artist -->
 <dialog class="about" id="about" aria-labelledby="about-name">
-  <img class="about-icon day" src="icon-day.png" alt="">
-  <img class="about-icon night" src="icon-night.png" alt="">
-  <h2 id="about-name">成章</h2>
-  <p class="about-version" id="about-version"></p>
-  <p class="about-line">出口成章。声音和文字都只在这台 Mac 上处理。</p>
-  <p class="about-models" id="about-models"></p>
+  <!-- a small window onto the same harbour, signed with the seal you clicked -->
+  <div class="about-art" id="about-art" aria-hidden="true">
+    <span class="seal about-seal"><b>成</b><b>章</b></span>
+  </div>
   <p class="about-credit">画意取自克劳德·莫奈《印象·日出》，1872 年</p>
-  <div class="about-links">
-    <a href="#" data-path="">GitHub</a>
-    <a href="#" data-path="/releases">检查新版本</a>
-    <a href="#" data-path="/blob/main/LICENSE">MIT 许可</a>
+  <div class="about-body">
+    <h2 id="about-name">成章<span class="about-version" id="about-version"></span></h2>
+    <p class="about-line">出口成章。声音和文字都只在这台 Mac 上处理。</p>
+    <p class="about-models" id="about-models" title="正在工作"></p>
+    <div class="about-links">
+      <a href="#" data-path="">GitHub</a>
+      <a href="#" data-path="/releases">检查新版本</a>
+      <a href="#" data-path="/blob/main/LICENSE">MIT 许可</a>
+    </div>
   </div>
 </dialog>
 

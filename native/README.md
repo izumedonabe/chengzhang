@@ -1,23 +1,23 @@
 # 成章 原生版（Rust）
 
-Python 版的原生重写。目标：安装后 10–20 MB（模型另外下载），性能和 Python 版持平或更好，结构上能接 Windows。
+Python 版的原生重写。安装后 **9.9 MB**（模型另外下载），Mac 用 MLX，Windows 用 llama.cpp，界面沿用 Python 版。
 
 ## 结构
 
 ```
 native/
   crates/cz-core      引擎：VAD 切段 → 边说边识别 → 边说边预填充 → 收尾录音 → 整理/回退
-                      （engine.py 的逐条移植），提示词，推理后端接口（backend.rs）。与平台无关。
-  crates/cz-llama     推理后端：llama.cpp（子模块，固定版本）静态链接 + 约 300 行 C 封装
-                      （shim/cz_llama.cpp）。Qwen3-ASR 走 libmtmd；整理模型每个模式一个缓存前缀，
-                      说话时往工作序列里追加。
-  crates/cz-platform  系统接口：快捷键（事件 tap）、粘贴、剪贴板、权限、不抢焦点的浮窗。
+                      （engine.py 的逐条移植）、提示词、推理后端接口（backend.rs）、重采样。与平台无关。
+  crates/cz-mlx       macOS 推理后端（mlx-rs）：Qwen3.5（含线性注意力 Metal 内核）、Qwen3-ASR
+                      （梅尔特征、音频编码器、Qwen3 解码器）、BPE 分词器、safetensors 读取。
+                      模型就是 Python 版用的 mlx-community 权重，两个版本共用一份。
+  crates/cz-llama     Windows（及其他平台）推理后端：llama.cpp（子模块）静态链接 + C 封装，GGUF 模型。
+  crates/cz-platform  系统接口：快捷键、粘贴、剪贴板、权限、不抢焦点的浮窗。
                       lib.rs 是统一接口，macos.rs 是实现，windows.rs 是占位和实现要点。
-  crates/cz-sim       命令行模拟器：按实时速度把 wav 喂给引擎，打印延迟（相当于 otl --simulate）。
-  app/                Tauri 外壳。直接加载 ../chengzhang/app/web（界面一行没改），
-                      用一段桥接脚本把 window.pywebview.api 转成 Tauri 命令。
-                      controller.rs / store.rs / models.rs / mic.rs 对应 Python 版同名模块。
-  tools/              打包（bundle_macos.sh）和与 Python 版的对比（compare.py）。
+  crates/cz-sim       命令行模拟器：按实时速度把 wav 喂给引擎，打印延迟。
+  app/                Tauri 外壳，直接加载 ../chengzhang/app/web（界面一行没改）。
+  third_party/        llama.cpp（子模块）、mlx-sys（改了构建参数：不编 MLX 的 CPU 后端）。
+  tools/              打包、和 Python 版对比的脚本。
 ```
 
 ## 构建
@@ -25,48 +25,56 @@ native/
 ```bash
 git submodule update --init native/third_party/llama.cpp
 native/tools/bundle_macos.sh          # → native/target/release/成章.app
-native/target/release/cz-sim data/dictation/*.wav   # 引擎延迟（需先 cargo build --release -p cz-sim）
 ```
 
-需要：Rust 1.89+、CMake、Xcode 命令行工具。模型下载到 `~/Library/Application Support/Chengzhang/gguf/`。
+需要：Rust 1.89+、CMake、Xcode 和它的 Metal 工具链（`xcodebuild -downloadComponent MetalToolchain`，约 840 MB，只在编译时用）。
 
-## 体积是怎么压下来的
+## 体积
 
 | 手段 | 效果 |
 |---|---|
-| 只编 libllama + libmtmd + ggml（不编 common、server、工具） | 推理部分约 9 MB |
-| 外壳（Tauri/wry/tao）按体积优化（opt-level=s），推理代码保持 -O3 | 19.2 → 14.4 MB |
-| Metal 内核源码 LZFSE 压缩：构建时替换 libggml-metal.a 里的明文源码对象，启动时解压到原来的符号地址，ggml 源码不改 | 14.4 → 10.0 MB |
-| 模型权重用 mmap 加载 | 内存压力大时系统能直接丢弃权重页，不进 swap |
+| MLX 打开 JIT：GPU 内核首次使用时编译，只预编一个 1.5 MB 的 metallib（Python 版是 214 MB） | |
+| 不编 MLX 的 CPU 后端（全部计算在 GPU 上；safetensors 自己读，因为 MLX 的读取要用 CPU 流） | 可执行文件 18.6 → 7.1 MB |
+| 外壳按体积优化（opt-level=s），推理代码保持 -O3 | |
+| 分词器自己写（不用 HF tokenizers），重采样自己写 | |
+
+App 构成：可执行文件 7.1 MB + mlx.metallib 1.5 MB + 两个图标 1.8 MB。
 
 ## 和 Python 版共用的数据
 
-`~/Library/Application Support/Chengzhang/` 下的 `history.jsonl`、`dictionary.txt` 两边共用；设置单独存在 `native-settings.json`（模型 id 不同），第一次启动时从 Python 版的 `settings.json` 继承偏好。
+- `~/Library/Application Support/Chengzhang/` 下的 `history.jsonl`、`dictionary.txt` 两边共用；设置存 `native-settings.json`，第一次启动时继承 Python 版的设置（包括模型选择）。
+- 模型在 Hugging Face 缓存（`~/.cache/huggingface/hub`），两个版本共用；原生版下载也写进这个目录。
 
 ## Windows
 
-- 推理：同一套 llama.cpp，`CZ_VULKAN=1` 打开 Vulkan 后端（CUDA 运行时太大，不用）；Metal 内核压缩只在 macOS 生效。
-- 系统接口：实现 `crates/cz-platform/src/windows.rs` 里列出的几项（低级键盘钩子、SendInput 粘贴、WS_EX_NOACTIVATE 浮窗）。
-- 外壳：Tauri 在 Windows 上用系统自带的 WebView2，界面不用改。
-- 麦克风：cpal 在 Windows 上走 WASAPI，代码不用改。
+- 推理：`cz-llama`（llama.cpp），`CZ_VULKAN=1` 打开 Vulkan 后端；模型用 GGUF（`app/src/models_gguf.rs`）。
+- 系统接口：实现 `crates/cz-platform/src/windows.rs` 里列出的几项。
+- 外壳：Tauri 在 Windows 上用系统自带的 WebView2；麦克风走 cpal（WASAPI）。
 
-## 实测（M4 Pro 24 GB，2026-11-13；系统 swap 已用 27 GB，Python 版同时开着）
+## 实测（M4 Pro 24 GB，2026-11-13；系统 swap 用到 30 GB 以上，Python 版同时开着）
 
-| | Python 版 0.1.1 | 原生版 |
+| | Python 版 0.1.1 | 原生版（MLX） |
 |---|---|---|
-| 安装后体积 | 491 MB | **11.2 MB**（可执行文件 10.0 MB + 两个图标 1.8 MB） |
-| 模型 | MLX：ASR 1.0 GB + Qwen3.5-4B 2.9 GB | GGUF：ASR 1.0 GB + Qwen3.5-4B Q4_K_M 2.7 GB |
-| 待机 CPU / 唤醒 | 0.0% / 4 次每分钟 | 0.0% / 12 次每分钟 |
-| 内存（phys_footprint） | 5.26 GB | 1.04 GB（另有 3.2 GB 模型权重是文件映射，内存紧张时系统可直接丢弃） |
-| 模型加载 | 5.1 s | 3.3–4.4 s（首次运行要编译 Metal 内核，约 9.6 s） |
+| 安装后体积 | 491 MB | **9.9 MB** |
+| 待机 CPU / 唤醒 | 0.0% / 4 次每分钟 | 0.0% / 1 次每分钟 |
+| 内存（phys_footprint，模型加载后） | 5.26 GB | **3.85 GB** |
+| 输出 | | 整理结果 4/4 逐字一致；识别 8/9 逐字一致（第 9 条差一个语气字） |
 
-延迟（`tools/compare.py`，两边交替各跑 2 轮取中位数，单位 ms）：
+单独测模型（两边交替跑）：
 
-| 录音 | 松开→首字 Python / 原生 | 松开→完成 Python / 原生 |
+| | Python（mlx-lm / mlx-audio） | 原生版 |
 |---|---|---|
-| d01–d07（6–9 s，一口气说完） | 252–312 / 289–364 | 401–703 / 482–912 |
-| d08（2 s 短句，不走整理） | 179 / 126 | 179 / 126 |
-| long（32 s，中间有停顿） | 61 / 38 | 1148 / 1888 |
+| Qwen3.5-4B 生成 | 82–85 tok/s | 81 tok/s |
+| Qwen3-ASR 识别 2–32 s 录音 | 80–595 ms | 63–574 ms（每条快 10–20%） |
 
-- 识别结果、整理质量和 Python 版一致（9 条里 6 条逐字相同，其余是贪心解码在数值误差下的分叉，两边各有对错）。
-- **差距在 Qwen3.5 的生成速度**：llama.cpp 今天早些时候在这台机器上测到 62 tok/s（当时 MLX 约 76），但在当前内存压力下掉到 30–36 tok/s，而同一时刻 MLX 是 86 tok/s。稠密模型（ASR 解码器）不受影响（249 tok/s），只有 Qwen3.5 的线性注意力路径变慢（预填充也从 760 掉到 400 tok/s）。原因还没查清，需要 Metal System Trace。
+整条流水线（`tools/compare.py`、`cz-sim`）：这台机器内存压力太大，同一配置两次运行能差 3–8 倍
+（松开→首字 293 ms 到 2.6 s），**数字没法用来比较**。较平稳的一次：原生版松开→首字 357–402 ms，
+Python 版 259–324 ms。要在退出 Python 版、腾出内存之后重测。
+
+几个和内存压力有关的取舍（`crates/cz-mlx/src/backend.rs`）：
+- 只在识别和生成时把模型内存锁定在物理内存（mlx-lm 也是这样）：一直锁定的话，空闲后第一次推理要等 1 s 以上；完全不锁定的话，整理模型的预填充从 30 ms 变成 250 ms。
+- MLX 的缓冲区缓存限制在 256 MB，否则预填充留下的临时缓冲会让常驻内存多出约 2 GB。
+
+### llama.cpp 版（Windows 路线）在 Mac 上的数据，供参考
+
+可执行文件 10.0 MB。Qwen3.5-4B 生成速度在内存压力下只有 30–36 tok/s（同时刻 MLX 86），稠密模型不受影响，原因没有查清。

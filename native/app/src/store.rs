@@ -240,6 +240,7 @@ impl Store {
 }
 
 /// Unix time of today's local midnight.
+#[cfg(not(windows))]
 fn local_midnight() -> f64 {
     #[repr(C)]
     struct Tm {
@@ -259,5 +260,30 @@ fn local_midnight() -> f64 {
         tm.hour = 0;
         tm.isdst = -1;
         mktime(&mut tm) as f64
+    }
+}
+
+/// Unix time of today's local midnight (MSVC CRT: _localtime64_s / _mktime64, 9-field tm).
+#[cfg(windows)]
+fn local_midnight() -> f64 {
+    #[repr(C)]
+    struct Tm {
+        sec: i32, min: i32, hour: i32, mday: i32, mon: i32, year: i32, wday: i32, yday: i32, isdst: i32,
+    }
+    extern "C" {
+        fn _localtime64_s(out: *mut Tm, t: *const i64) -> i32;
+        fn _mktime64(tm: *mut Tm) -> i64;
+    }
+    let t = now() as i64;
+    unsafe {
+        let mut tm: Tm = std::mem::zeroed();
+        if _localtime64_s(&mut tm, &t) != 0 {
+            return t as f64 - (t % 86400) as f64;
+        }
+        tm.sec = 0;
+        tm.min = 0;
+        tm.hour = 0;
+        tm.isdst = -1;
+        _mktime64(&mut tm) as f64
     }
 }

@@ -70,6 +70,12 @@ fn main() {
     for lib in ["mtmd", "llama"] {
         println!("cargo:rustc-link-lib=static={lib}");
     }
+    // libmtmd uses vendor/hash (sha256 for bitmap ids); CMake builds but doesn't install it.
+    // The Apple linker drops the unused caller, MSVC needs the symbol.
+    for sub in ["build/vendor/hash", "build/vendor/hash/Release"] {
+        println!("cargo:rustc-link-search=native={}", dst.join(sub).display());
+    }
+    println!("cargo:rustc-link-lib=static=vendor-hash");
     if target_os == "macos" {
         println!("cargo:rustc-link-lib=static=ggml-metal");
         if dst.join("lib/libggml-blas.a").exists() {

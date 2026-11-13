@@ -67,7 +67,26 @@ pub fn suspicious(raw: &str, out: &str, mode: Option<&str>) -> bool {
     }
     let r = norm(raw).chars().count() as f32;
     let o = norm(out).chars().count() as f32;
-    o == 0.0 || o < 0.35 * r || o > 1.8 * r + 20.0
+    o == 0.0 || o < 0.35 * r || o > 1.8 * r + 20.0 || answered(raw, out)
+}
+
+/// Cleaning up trims and rearranges what was said; answering a question ("为什么天空是蓝色的"
+/// → "天空呈现蓝色是因为瑞利散射…") brings in a lot of wording that was never said.
+/// Digits don't count: "二零二六" legitimately becomes "2026".
+fn answered(raw: &str, out: &str) -> bool {
+    let mut have: std::collections::HashMap<char, usize> = std::collections::HashMap::new();
+    for c in norm(raw).chars() {
+        *have.entry(c).or_default() += 1;
+    }
+    let (mut new, mut total) = (0usize, 0usize);
+    for c in norm(out).chars().filter(|c| !c.is_ascii_digit()) {
+        total += 1;
+        match have.get_mut(&c) {
+            Some(n) if *n > 0 => *n -= 1,
+            _ => new += 1,
+        }
+    }
+    new >= 5 && new as f32 > 0.4 * total as f32
 }
 
 /// Qwen3-ASR gets the personal dictionary as context; on unclear audio (noise, a talk
@@ -150,5 +169,18 @@ mod tests {
         assert!(needs_llm("嗯好的", None, true));
         assert!(suspicious("我们明天开会讨论一下这个方案", "好", None));
         assert!(!suspicious("我们明天开会讨论一下这个方案", "我们明天开会讨论这个方案。", None));
+    }
+
+    #[test]
+    fn answers_are_suspicious_cleanups_are_not() {
+        // answers
+        assert!(suspicious("为什么天空是蓝色的", "天空呈现蓝色是因为瑞利散射，蓝光更容易被空气分子散射。", None));
+        assert!(suspicious("请问一下北京今天天气怎么样", "北京今天晴，最高气温十五度。", None));
+        // cleanups
+        assert!(!suspicious("嗯那个就是我想问一下咱们这个项目什么时候上线", "我想问一下咱们这个项目什么时候上线？", None));
+        assert!(!suspicious("我们后端用的是post gray sql然后缓存用的是read is", "我们后端用的是 PostgreSQL，缓存用的是 Redis。", None));
+        assert!(!suspicious("这个千万模型挺好的", "这个 Qwen 模型挺好的。", None));
+        assert!(!suspicious("我们二零二六年的目标是用户增长百分之十五", "我们 2026 年的目标是用户增长 15%。", None));
+        assert!(!suspicious("那个Docker和虚拟机到底有什么区别啊", "Docker 和虚拟机到底有什么区别？", None));
     }
 }

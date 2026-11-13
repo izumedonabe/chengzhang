@@ -29,6 +29,22 @@ native/tools/bundle_macos.sh          # → native/target/release/成章.app
 
 需要：Rust 1.89+、CMake、Xcode 和它的 Metal 工具链（`xcodebuild -downloadComponent MetalToolchain`，约 840 MB，只在编译时用）。
 
+## 版本号与发布
+
+版本号是 `MAJOR.MINOR.PATCH`，只写在 `native/Cargo.toml` 的 `[workspace.package] version` 一处，App 的 Info.plist、「关于」卡片和 DMG 文件名都从这里读。
+
+| 这次发布里有… | 升哪一位 | 例子 |
+|---|---|---|
+| 不兼容的大改：数据要迁移、旧设置或旧数据不能用了、换了整个实现 | MAJOR | 0.x → 1.0.0 |
+| 至少一个新功能（新的设置、快捷键、页面、下载源等） | MINOR，PATCH 归零 | 0.3.2 → 0.4.0 |
+| 只有修复和小改进，没有新功能 | PATCH | 0.3.0 → 0.3.1 |
+
+发布步骤：
+
+1. 在 `main` 上改 `native/Cargo.toml` 的版本号，提交 `Release x.y.z`。
+2. `native/tools/build_dmg.sh` → `native/target/release/Chengzhang-x.y.z-arm64.dmg`。
+3. 打标签 `vx.y.z` 并推送，用 `gh release create` 发布，附上 DMG。发布说明写给用户看：怎么更新、新功能、修复、需要注意的变化。
+
 ## 体积
 
 | 手段 | 效果 |

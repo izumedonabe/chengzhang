@@ -45,14 +45,18 @@ jobs:
         run: cargo build --release -p chengzhang
 
       - name: Package
+        id: pkg
         shell: pwsh
         run: |
+          $ver = (Select-String -Path native/Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
           $dir = "Chengzhang-windows-x64"
           New-Item -ItemType Directory $dir | Out-Null
           Copy-Item C:\t\release\chengzhang.exe "$dir/Chengzhang.exe"
-          Get-Item "$dir/Chengzhang.exe" | Select-Object Name, Length
+          Copy-Item native/tools/windows/README.txt "$dir/README.txt"
+          Get-ChildItem $dir | Select-Object Name, Length
+          "version=$ver" >> $env:GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Chengzhang-0.2.0-windows-x64-preview
+          name: Chengzhang-${{ steps.pkg.outputs.version }}-windows-x64
           path: Chengzhang-windows-x64

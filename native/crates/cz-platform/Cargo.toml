@@ -19,3 +19,7 @@ windows-sys = { version = "0.59", features = [
   "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi",
 ] }
+# UI Automation (COM) for reading back the text the user corrected
+windows = { version = "0.61", features = [
+  "Win32_Foundation", "Win32_System_Com", "Win32_System_Ole", "Win32_System_Variant", "Win32_UI_Accessibility",
+] }

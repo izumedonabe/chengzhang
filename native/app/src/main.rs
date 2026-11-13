@@ -116,7 +116,9 @@ fn main() {
                 let _ = w.hide();
             }
         }
-        RunEvent::WindowEvent { event: WindowEvent::ThemeChanged(_), .. } => apply_icon(app),
+        // Without tauri's `custom-protocol` feature the build counts as "dev", and tauri then swaps
+        // the Dock icon for the 32×32 icons/icon.png on Ready (after setup), which looks blurry.
+        RunEvent::Ready | RunEvent::WindowEvent { event: WindowEvent::ThemeChanged(_), .. } => apply_icon(app),
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => {
             if let Some(w) = app.get_webview_window("main") {

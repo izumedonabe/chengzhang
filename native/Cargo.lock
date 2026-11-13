@@ -340,7 +340,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "chengzhang"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cpal",
  "cz-core",
@@ -577,14 +577,15 @@ checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
 name = "cz-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "earshot",
+ "pinyin",
 ]
 
 [[package]]
 name = "cz-llama"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cc",
  "cmake",
@@ -593,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "cz-mlx"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cz-core",
  "mlx-rs",
@@ -603,17 +604,18 @@ dependencies = [
 
 [[package]]
 name = "cz-platform"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "objc2",
  "objc2-foundation",
  "serde",
+ "windows 0.61.3",
  "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "cz-sim"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cz-core",
  "cz-llama",
@@ -2524,6 +2526,12 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pinyin"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16f2611cd06a1ac239a0cea4521de9eb068a6ca110324ee00631aa68daa74fc0"
 
 [[package]]
 name = "pkg-config"

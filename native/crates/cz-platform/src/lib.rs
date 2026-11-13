@@ -78,6 +78,8 @@ pub enum HotkeyEvent {
     Up,
     /// Esc while a dictation is active
     Cancel,
+    /// the correction hotkey: the user fixed the last dictation in place, learn from it
+    Learn,
 }
 
 pub type HotkeyCallback = Arc<dyn Fn(HotkeyEvent) + Send + Sync>;
@@ -87,9 +89,10 @@ pub struct HotkeyHandle(imp::HotkeyTap);
 
 impl HotkeyHandle {
     /// Must be called on the main thread (the tap is attached to the main run loop).
+    /// `learn`: the correction hotkey (a key with modifiers), if any.
     /// Returns the handle and how it was installed ("tap" = full, "listen" = can't swallow keys).
-    pub fn install(spec: Hotkey, cb: HotkeyCallback) -> Option<(HotkeyHandle, &'static str)> {
-        imp::HotkeyTap::install(spec, cb).map(|(t, how)| (HotkeyHandle(t), how))
+    pub fn install(spec: Hotkey, learn: Option<Hotkey>, cb: HotkeyCallback) -> Option<(HotkeyHandle, &'static str)> {
+        imp::HotkeyTap::install(spec, learn, cb).map(|(t, how)| (HotkeyHandle(t), how))
     }
     /// A dictation is running (Esc cancels it).
     pub fn set_active(&self, on: bool) {
@@ -112,6 +115,15 @@ pub fn paste_text(text: &str) -> bool {
 
 pub fn copy_text(text: &str) {
     imp::copy_text(text)
+}
+
+/// The text the user is editing in the frontmost app: the selection if there is one,
+/// else the whole focused text field (via Accessibility); for apps that don't expose
+/// their text fields, the selection copied with a synthetic ⌘C (clipboard restored).
+/// Returns the text and where it came from ("selection", "field", "copy").
+/// Call OFF the main thread: the ⌘C path waits for the app to answer.
+pub fn grab_text() -> Option<(String, &'static str)> {
+    imp::grab_text()
 }
 
 // ----------------------------------------------------------------------------- permissions & misc

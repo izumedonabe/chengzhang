@@ -118,6 +118,9 @@ pub enum Event {
     Text(String),
     Done(Box<Outcome>),
     PromptsRebuilt { secs: f32 },
+    /// A Cancel was processed. Everything emitted before this belonged to the cancelled
+    /// dictation; everything after it to the next one.
+    Canceled,
     Error(String),
 }
 
@@ -285,6 +288,7 @@ impl Worker {
                         p.live = None;
                         p.llm.end();
                     }
+                    (self.emit)(Event::Canceled);
                     Ok(())
                 }
                 Command::Unload { all } => {
@@ -503,7 +507,8 @@ impl Worker {
         let (mut text, mut fallback) = (raw.clone(), false);
         let mode = self.mode.clone();
         match &mut self.polisher {
-            Some(p) if !raw.is_empty() && needs_llm(&raw, mode.as_deref(), self.cfg.fast_path) => {
+            Some(p) if !raw.is_empty()
+                && needs_llm(&raw, mode.as_deref(), self.cfg.fast_path) => {
                 match p.run(&raw, &mode, self.cfg.incremental_prefill, self.cfg.max_tokens, &mut on_text) {
                     Ok((out, stats)) => {
                         if suspicious(&raw, &out, mode.as_deref()) {
@@ -548,5 +553,78 @@ impl Worker {
         };
         (self.emit)(Event::Done(Box::new(outcome)));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::Result;
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
+
+    struct FakeAsr;
+    impl Asr for FakeAsr {
+        fn transcribe(&mut self, _: &[f32], _: &str, _: Option<&str>) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+    struct FakeBackend;
+    impl Backend for FakeBackend {
+        fn load_asr(&self, _: &AsrSpec) -> Result<Box<dyn Asr>> {
+            Ok(Box::new(FakeAsr))
+        }
+        fn load_llm(&self, _: &LlmSpec, _: usize) -> Result<Box<dyn Llm>> {
+            Err("no llm in this test".into())
+        }
+    }
+
+    /// Drive a fresh engine with `cmds` and return the names of the session events it emits.
+    fn events(cmds: Vec<Command>) -> Vec<&'static str> {
+        let (tx, rx) = channel();
+        let cfg = Config::new(AsrSpec { model: "asr".into(), mmproj: "mmproj".into() }, None);
+        let eng = Engine::spawn(cfg, Arc::new(FakeBackend), Box::new(move |e| {
+            let _ = tx.send(e);
+        }));
+        for c in cmds {
+            eng.send(c);
+        }
+        let mut out = vec![];
+        loop {
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(Event::CaptureDone { .. }) => out.push("capture_done"),
+                Ok(Event::Done(_)) => out.push("done"),
+                Ok(Event::Canceled) => out.push("canceled"),
+                Ok(Event::Error(e)) => panic!("{e}"),
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        out
+    }
+
+    /// The app relies on this order: whatever belongs to a dictation that was given up on
+    /// comes before Canceled, and nothing of it comes after.
+    #[test]
+    fn cancel_is_acknowledged_after_everything_of_the_cancelled_dictation() {
+        let pcm = vec![0.0f32; SR / 2];
+        // esc while it was still being finished: its Done is already on the way
+        assert_eq!(
+            events(vec![Command::Start(Some(String::new())), Command::Audio(pcm.clone()),
+                        Command::End(Instant::now()), Command::Cancel]),
+            ["capture_done", "done", "canceled"]
+        );
+        // esc while recording: no Done at all, even if End and Flush still arrive
+        assert_eq!(
+            events(vec![Command::Start(Some(String::new())), Command::Audio(pcm.clone()), Command::Cancel,
+                        Command::End(Instant::now()), Command::Flush]),
+            ["canceled"]
+        );
+        // and the next dictation is unaffected
+        assert_eq!(
+            events(vec![Command::Start(Some(String::new())), Command::Cancel,
+                        Command::Start(Some(String::new())), Command::Audio(pcm), Command::End(Instant::now())]),
+            ["canceled", "capture_done", "done"]
+        );
     }
 }

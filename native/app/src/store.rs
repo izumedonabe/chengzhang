@@ -19,12 +19,15 @@ pub fn defaults() -> Map<String, Value> {
         "llm_model": DEFAULT_LLM,             // "" = no polishing
         "hotkey": {"kind": "modifier", "keycode": 61},
         "hotkey_mode": "hold",                 // hold | toggle
+        // fix the last dictation in place, then press this: learn what was changed
+        "learn_hotkey": {"kind": "key", "keycode": 8, "mods": ["control", "option"], "name": "C"},
         "translate_lang": "英文",
         "language": "Chinese",                 // ASR language; "auto" = detect
         "post_roll_ms": 300,
         "fast_path": true,
         "auto_paste": true,
         "appearance": "auto",
+        "download_source": "auto",            // auto | huggingface | modelscope
         "mic": "auto",
         "keep_mic_open": false,
         "save_audio": false,
@@ -148,6 +151,18 @@ impl Store {
         clean
     }
 
+    /// Add words that aren't in the dictionary yet; returns the ones added.
+    pub fn add_words(&self, new: &[String]) -> Vec<String> {
+        let _g = self.lock.lock().unwrap();
+        let mut words = self.dictionary();
+        let added: Vec<String> = new.iter().filter(|w| !words.contains(w)).cloned().collect();
+        if !added.is_empty() {
+            words.extend(added.iter().cloned());
+            self.set_dictionary(&words);
+        }
+        added
+    }
+
     // ------------------------------------------------------------------ history
 
     pub fn add(&self, mut entry: Map<String, Value>) -> Map<String, Value> {
@@ -184,6 +199,27 @@ impl Store {
             .skip(offset)
             .take(limit)
             .collect()
+    }
+
+    /// Set one field of a history entry; returns the updated entry.
+    pub fn update_entry(&self, id: &str, key: &str, value: Value) -> Option<Map<String, Value>> {
+        let _g = self.lock.lock().unwrap();
+        let mut found = None;
+        let body: String = self
+            .all()
+            .into_iter()
+            .map(|mut e| {
+                if e.get("id").and_then(|v| v.as_str()) == Some(id) {
+                    e.insert(key.to_string(), value.clone());
+                    found = Some(e.clone());
+                }
+                Value::Object(e).to_string() + "\n"
+            })
+            .collect();
+        if found.is_some() {
+            let _ = fs::write(self.history_path(), body);
+        }
+        found
     }
 
     pub fn delete(&self, id: &str) {

@@ -3,6 +3,8 @@
 //!             loop. Lone-modifier hotkeys (right Alt …) are swallowed, otherwise releasing
 //!             Alt would open the menu bar of the app you are typing into.
 //!   paste   — CF_UNICODETEXT on the clipboard, SendInput Ctrl+V, previous text restored
+//!   correction hotkey — read back the text the user fixed: UI Automation (selection, else
+//!             the whole focused field), else a synthetic Ctrl+C (clipboard restored)
 //!   HUD     — WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, ShowWindow(SW_SHOWNOACTIVATE)
 //!   permissions — none needed
 //! Hotkeys are stored with macOS keycodes (shared settings format) and mapped to VK codes here.
@@ -101,8 +103,10 @@ pub fn hotkey_label(h: &Hotkey) -> String {
 
 struct HookState {
     spec: Hotkey,
+    learn: Option<Hotkey>,
     cb: HotkeyCallback,
     down: AtomicBool,
+    learn_down: AtomicBool,
     active: AtomicBool,
     paused: AtomicBool,
 }
@@ -114,8 +118,26 @@ pub struct HotkeyTap {
     thread: AtomicU32,
 }
 
+/// Modifiers as the hook saw them. A modifier we swallowed (the right-Alt dictation key)
+/// never reaches the system's key state, so GetAsyncKeyState alone would miss it.
+static HELD: AtomicU32 = AtomicU32::new(0);
+
+fn mod_bit(vk: u16) -> u32 {
+    match vk {
+        VK_LCONTROL => 1,
+        VK_RCONTROL => 2,
+        VK_LMENU => 4,
+        VK_RMENU => 8,
+        VK_LSHIFT => 16,
+        VK_RSHIFT => 32,
+        VK_LWIN => 64,
+        VK_RWIN => 128,
+        _ => 0,
+    }
+}
+
 fn key_down(vk: u16) -> bool {
-    unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
+    HELD.load(Ordering::Relaxed) & mod_bit(vk) != 0 || unsafe { (GetAsyncKeyState(vk as i32) as u16 & 0x8000) != 0 }
 }
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -128,6 +150,12 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
             let is_down = msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN;
             let is_up = msg == WM_KEYUP || msg == WM_SYSKEYUP;
             let vk = k.vkCode as u16;
+            let bit = mod_bit(vk);
+            if is_down {
+                HELD.fetch_or(bit, Ordering::Relaxed);
+            } else if is_up {
+                HELD.fetch_and(!bit, Ordering::Relaxed);
+            }
             let swallow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handle(&st, vk, is_down, is_up)))
                 .unwrap_or(false);
             if swallow {
@@ -147,6 +175,20 @@ fn handle(st: &HookState, vk: u16, is_down: bool, is_up: bool) -> bool {
         st.down.store(false, Ordering::Relaxed);
         (st.cb)(HotkeyEvent::Cancel);
         return true;
+    }
+    // the correction hotkey: exactly its modifiers, fires once per press (not on auto-repeat)
+    if let Some(l) = st.learn.as_ref() {
+        if key_vk(l.keycode).map(|k| k.0) == Some(vk) {
+            if is_down && mods_exact(&l.mods) {
+                if !st.learn_down.swap(true, Ordering::Relaxed) {
+                    (st.cb)(HotkeyEvent::Learn);
+                }
+                return true;
+            }
+            if is_up && st.learn_down.swap(false, Ordering::Relaxed) {
+                return true;
+            }
+        }
     }
     let spec = &st.spec;
     if spec.kind == "modifier" {
@@ -191,12 +233,29 @@ fn handle(st: &HookState, vk: u16, is_down: bool, is_up: bool) -> bool {
     false
 }
 
+fn mod_held(m: &str) -> bool {
+    match m {
+        "control" => key_down(VK_LCONTROL) || key_down(VK_RCONTROL),
+        "option" => key_down(VK_LMENU) || key_down(VK_RMENU),
+        "shift" => key_down(VK_LSHIFT) || key_down(VK_RSHIFT),
+        "command" => key_down(VK_LWIN) || key_down(VK_RWIN),
+        _ => false,
+    }
+}
+
+/// Exactly these modifiers are down (Ctrl+Alt+C must not fire on Ctrl+Alt+Shift+C).
+fn mods_exact(mods: &[String]) -> bool {
+    ["control", "option", "shift", "command"].iter().all(|m| mod_held(m) == mods.iter().any(|x| x == m))
+}
+
 impl HotkeyTap {
-    pub fn install(spec: Hotkey, cb: HotkeyCallback) -> Option<(HotkeyTap, &'static str)> {
+    pub fn install(spec: Hotkey, learn: Option<Hotkey>, cb: HotkeyCallback) -> Option<(HotkeyTap, &'static str)> {
         let state = Arc::new(HookState {
             spec,
+            learn,
             cb,
             down: AtomicBool::new(false),
+            learn_down: AtomicBool::new(false),
             active: AtomicBool::new(false),
             paused: AtomicBool::new(false),
         });
@@ -323,6 +382,86 @@ pub fn paste_text(text: &str) -> bool {
         });
     }
     true
+}
+
+// ----------------------------------------------------------------------------- reading the corrected text
+
+/// The focused control's text via UI Automation: the selection if there is one, else the
+/// whole field. Passwords are never read.
+fn uia_focused_text() -> Option<(String, &'static str)> {
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
+    use windows::Win32::UI::Accessibility::{
+        CUIAutomation, IUIAutomation, IUIAutomationTextPattern, IUIAutomationValuePattern, UIA_TextPatternId,
+        UIA_ValuePatternId,
+    };
+    const MAX: i32 = 20_000; // a whole document is not "the message I just fixed"
+    let nonblank = |s: String| if s.trim().is_empty() { None } else { Some(s) };
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        let uia: IUIAutomation = CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+        let el = uia.GetFocusedElement().ok()?;
+        if el.CurrentIsPassword().map(|b| b.as_bool()).unwrap_or(true) {
+            return None;
+        }
+        if let Ok(tp) = el.GetCurrentPatternAs::<IUIAutomationTextPattern>(UIA_TextPatternId) {
+            if let Ok(ranges) = tp.GetSelection() {
+                let mut sel = String::new();
+                for i in 0..ranges.Length().unwrap_or(0) {
+                    if let Ok(t) = ranges.GetElement(i).and_then(|r| r.GetText(MAX)) {
+                        sel += &t.to_string();
+                    }
+                }
+                if let Some(s) = nonblank(sel) {
+                    return Some((s, "selection"));
+                }
+            }
+            if let Some(s) = tp.DocumentRange().and_then(|r| r.GetText(MAX)).ok().and_then(|t| nonblank(t.to_string())) {
+                return Some((s, "field"));
+            }
+        }
+        if let Ok(vp) = el.GetCurrentPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId) {
+            if let Some(s) = vp.CurrentValue().ok().and_then(|t| nonblank(t.to_string())) {
+                return Some((s, "field"));
+            }
+        }
+        None
+    }
+}
+
+/// The selection, via a synthetic Ctrl+C; the user's clipboard text is put back afterwards.
+fn copy_selection() -> Option<String> {
+    // the correction hotkey's modifiers may still be down: Ctrl+Alt+C isn't a copy
+    let t0 = std::time::Instant::now();
+    while ["control", "option", "shift", "command"].iter().any(|m| mod_held(m)) && t0.elapsed().as_millis() < 1000 {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    let previous = clipboard_text();
+    let before = unsafe { GetClipboardSequenceNumber() };
+    let inputs = [key_input(VK_CONTROL, false), key_input(b'C' as u16, false), key_input(b'C' as u16, true), key_input(VK_CONTROL, true)];
+    unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+    let t0 = std::time::Instant::now();
+    while unsafe { GetClipboardSequenceNumber() } == before && t0.elapsed().as_millis() < 400 {
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
+    if unsafe { GetClipboardSequenceNumber() } == before {
+        return None; // nothing selected
+    }
+    let got = clipboard_text();
+    if let Some(prev) = previous {
+        copy_text(&prev);
+    }
+    got.filter(|s| !s.trim().is_empty())
+}
+
+/// Called off the main thread. UI Automation runs on its own thread with a time limit, so
+/// an app that doesn't answer can't hang the correction.
+pub fn grab_text() -> Option<(String, &'static str)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(uia_focused_text());
+    });
+    rx.recv_timeout(std::time::Duration::from_millis(1500)).ok().flatten()
+        .or_else(|| copy_selection().map(|s| (s, "copy")))
 }
 
 // ----------------------------------------------------------------------------- permissions & misc

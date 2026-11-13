@@ -21,7 +21,7 @@ pub fn hotkey_label(h: &Hotkey) -> String {
 pub struct HotkeyTap;
 
 impl HotkeyTap {
-    pub fn install(_spec: Hotkey, _cb: HotkeyCallback) -> Option<(HotkeyTap, &'static str)> {
+    pub fn install(_spec: Hotkey, _learn: Option<Hotkey>, _cb: HotkeyCallback) -> Option<(HotkeyTap, &'static str)> {
         None
     }
     pub fn set_active(&self, _on: bool) {}
@@ -54,4 +54,8 @@ pub fn open_url(_url: &str) -> bool {
 }
 pub fn bring_to_front(_title: &str) -> bool {
     false
+}
+
+pub fn grab_text() -> Option<(String, &'static str)> {
+    None
 }

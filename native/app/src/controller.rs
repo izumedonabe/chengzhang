@@ -6,6 +6,7 @@ use crate::models::{self, Downloads};
 use crate::store::Store;
 use cz_core::backend::Backend;
 use cz_core::engine::{Command, Config, Engine, Event, LiveSettings, Outcome};
+use cz_core::learn;
 use cz_platform::{Hotkey, HotkeyEvent, HotkeyHandle};
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,9 +21,14 @@ pub enum Work {
     HotkeyDown(bool),
     HotkeyUp,
     HotkeyCancel,
+    Learn,
     Engine(u64, Event),
     ForceFlush(u64),
+    Slow(u64),
 }
+
+/// After this long in "整理中" the HUD says it's slow and that esc gives up on it.
+const SLOW_AFTER: Duration = Duration::from_secs(6);
 
 pub struct Ctl {
     pub app: AppHandle,
@@ -40,7 +46,14 @@ pub struct Ctl {
     last_used: Mutex<Instant>,
     hud_gen: AtomicU64,
     capture_gen: AtomicU64,
+    /// The dictation that was released and is still being transcribed / polished.
+    pending: Mutex<Option<u64>>,
+    dictation_gen: AtomicU64,
+    /// Cancels the engine hasn't acknowledged yet: until then, what it emits belongs to
+    /// a dictation the user gave up on and must not be pasted.
+    discarding: AtomicU64,
     polish: AtomicBool,
+    learning: AtomicBool,
     work: Sender<Work>,
 }
 
@@ -60,6 +73,15 @@ fn backend() -> Arc<dyn Backend> {
     return Arc::new(cz_mlx::backend::MlxBackend);
     #[cfg(not(target_os = "macos"))]
     return Arc::new(cz_llama::LlamaBackend);
+}
+
+/// The correction hotkey: a key with at least one modifier; anything else = the default.
+pub fn learn_hotkey_from(v: Option<&Value>) -> Hotkey {
+    let ok = |h: &Hotkey| h.kind == "key" && !h.mods.is_empty();
+    v.and_then(|v| serde_json::from_value::<Hotkey>(v.clone()).ok())
+        .map(|h| h.sanitized())
+        .filter(ok)
+        .unwrap_or_else(|| serde_json::from_value(crate::store::defaults()["learn_hotkey"].clone()).unwrap())
 }
 
 pub fn hotkey_from(v: Option<&Value>) -> Hotkey {
@@ -87,6 +109,7 @@ impl Ctl {
                 c.on_download_change(id);
             }
         }));
+        downloads.set_source(store.settings().get("download_source").and_then(|v| v.as_str()).unwrap_or("auto"));
         let status = json!({"state": "starting", "stage": null, "progress": 0.0, "error": null});
         let ctl = Arc::new(Ctl {
             app,
@@ -104,7 +127,11 @@ impl Ctl {
             last_used: Mutex::new(Instant::now()),
             hud_gen: AtomicU64::new(0),
             capture_gen: AtomicU64::new(0),
+            pending: Mutex::new(None),
+            dictation_gen: AtomicU64::new(0),
+            discarding: AtomicU64::new(0),
             polish: AtomicBool::new(false),
+            learning: AtomicBool::new(false),
             work: work_tx,
         });
         let c = ctl.clone();
@@ -114,8 +141,10 @@ impl Ctl {
                     Work::HotkeyDown(shift) => c.hotkey_down(shift),
                     Work::HotkeyUp => c.hotkey_up(),
                     Work::HotkeyCancel => c.hotkey_cancel(),
+                    Work::Learn => c.learn(),
                     Work::Engine(gen, e) => c.on_engine(gen, e),
                     Work::ForceFlush(gen) => c.force_flush(gen),
+                    Work::Slow(gen) => c.slow(gen),
                 }
             }
         }).unwrap();
@@ -210,8 +239,10 @@ impl Ctl {
         let c = self.clone();
         let _ = self.app.run_on_main_thread(move || {
             *c.hotkey.lock().unwrap() = None; // drop the old tap first
-            let spec = hotkey_from(c.store.settings().get("hotkey"));
-            let label = spec.label();
+            let s = c.store.settings();
+            let spec = hotkey_from(s.get("hotkey"));
+            let learn = learn_hotkey_from(s.get("learn_hotkey"));
+            let label = format!("{} / 纠错 {}", spec.label(), learn.label());
             let work = c.work.clone();
             // the tap runs on the main thread: only enqueue there, never block
             let cb = Arc::new(move |e: HotkeyEvent| {
@@ -219,9 +250,10 @@ impl Ctl {
                     HotkeyEvent::Down { shift } => Work::HotkeyDown(shift),
                     HotkeyEvent::Up => Work::HotkeyUp,
                     HotkeyEvent::Cancel => Work::HotkeyCancel,
+                    HotkeyEvent::Learn => Work::Learn,
                 });
             });
-            let how = match HotkeyHandle::install(spec, cb) {
+            let how = match HotkeyHandle::install(spec, Some(learn), cb) {
                 Some((h, how)) => {
                     *c.hotkey.lock().unwrap() = Some(h);
                     how
@@ -257,6 +289,10 @@ impl Ctl {
         // stop the old engine (dropping it joins its thread)
         let gen = self.engine_gen.fetch_add(1, Ordering::SeqCst) + 1;
         *self.engine_tx.lock().unwrap() = None;
+        self.discarding.store(0, Ordering::SeqCst);
+        if self.pending.lock().unwrap().take().is_some() {
+            self.hud("hidden", Value::Null);
+        }
         let old = self.engine.lock().unwrap().take();
         drop(old);
         if !missing.is_empty() {
@@ -324,6 +360,24 @@ impl Ctl {
         if gen != self.engine_gen.load(Ordering::SeqCst) {
             return; // events from an engine we already replaced
         }
+        if self.discarding.load(Ordering::SeqCst) > 0 {
+            match e {
+                Event::Canceled => {
+                    let _ = self.discarding.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+                    return;
+                }
+                // what's left of the dictation the user gave up on
+                Event::Segment(_) | Event::CaptureDone { .. } | Event::Raw(_) | Event::Text(_) | Event::Done(_) => return,
+                Event::Error(msg) => {
+                    eprintln!("[cz] engine error (cancelled dictation): {msg}");
+                    if !self.state_is("ready") {
+                        self.set_status(json!({"state": "error", "error": msg}));
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         match e {
             Event::Loading { stage, progress, reload } => {
                 let state = if reload { "waking" } else { "loading" };
@@ -343,12 +397,18 @@ impl Ctl {
             }
             Event::Error(msg) => {
                 eprintln!("[cz] engine error: {msg}");
-                if !self.state_is("ready") {
-                    self.set_status(json!({"state": "error", "error": msg}));
-                } else {
+                // a dictation in flight always gets an answer, whatever state the app is in
+                // (e.g. the LLM failing to come back while waking up)
+                let in_flight = self.pending.lock().unwrap().take().is_some() || self.recording();
+                if in_flight {
+                    self.set_recording(false);
+                    self.end_dictation();
                     let short: String = msg.chars().take(60).collect();
                     self.hud("error", json!(format!("出错了：{short}")));
-                    self.hide_hud_later(2.0);
+                    self.hide_hud_later(2.6);
+                }
+                if !self.state_is("ready") {
+                    self.set_status(json!({"state": "error", "error": msg}));
                 }
                 self.stop_capture();
             }
@@ -357,7 +417,11 @@ impl Ctl {
                 self.send(Command::Flush);
             }
             Event::Segment(info) => self.hud("partial", json!(info.text)),
-            Event::Done(o) => self.finish(*o),
+            Event::Done(o) => {
+                self.pending.lock().unwrap().take();
+                self.end_dictation();
+                self.finish(*o)
+            }
             _ => {}
         }
     }
@@ -472,6 +536,13 @@ impl Ctl {
         if self.recording() || self.mic.capturing() {
             return;
         }
+        if self.pending.lock().unwrap().is_some() {
+            // the last one isn't out yet. Starting another now would mix the two up.
+            let mut p = self.session.lock().unwrap().clone();
+            p["note"] = json!("上一段还没好，esc 可放弃");
+            self.hud("thinking", p);
+            return;
+        }
         let tl = s_str(&s, "translate_lang");
         let mode = if shift && !tl.is_empty() && self.polish.load(Ordering::SeqCst) { Some(tl) } else { None };
         *self.session.lock().unwrap() = json!({"app": cz_platform::frontmost_app(), "mode": mode});
@@ -503,12 +574,17 @@ impl Ctl {
             return;
         }
         *self.last_used.lock().unwrap() = Instant::now();
-        if let Some(h) = self.hotkey.lock().unwrap().as_ref() {
-            h.set_active(false);
-        }
+        // esc stays live until the text is out: it gives up on a slow one
         self.set_recording(false);
         self.send(Command::End(Instant::now()));
+        let d = self.dictation_gen.fetch_add(1, Ordering::SeqCst) + 1;
+        *self.pending.lock().unwrap() = Some(d);
         self.hud("thinking", self.session.lock().unwrap().clone());
+        let work = self.work.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(SLOW_AFTER);
+            let _ = work.send(Work::Slow(d));
+        });
         // safety net: if the engine never reports capture_done, stop anyway
         let gen = self.capture_gen.fetch_add(1, Ordering::SeqCst) + 1;
         let work = self.work.clone();
@@ -519,13 +595,34 @@ impl Ctl {
     }
 
     fn hotkey_cancel(self: &Arc<Self>) {
+        self.end_dictation();
+        self.pending.lock().unwrap().take();
+        self.set_recording(false);
+        self.stop_capture();
+        if self.has_engine() {
+            // the engine may still be busy with it: drop whatever it says until it has
+            // seen the cancel
+            self.discarding.fetch_add(1, Ordering::SeqCst);
+            self.send(Command::Cancel);
+        }
+        self.hud("hidden", Value::Null);
+    }
+
+    /// esc goes back to the app once a dictation is over.
+    fn end_dictation(&self) {
         if let Some(h) = self.hotkey.lock().unwrap().as_ref() {
             h.set_active(false);
         }
-        self.set_recording(false);
-        self.stop_capture();
-        self.send(Command::Cancel);
-        self.hud("hidden", Value::Null);
+    }
+
+    /// Still "整理中" after a while: usually the Mac is busy (another model on the GPU, a
+    /// big build, memory swapping). Say so, rather than look stuck.
+    fn slow(&self, gen: u64) {
+        if *self.pending.lock().unwrap() == Some(gen) {
+            let mut p = self.session.lock().unwrap().clone();
+            p["note"] = json!("比平时慢，esc 可放弃");
+            self.hud("thinking", p);
+        }
     }
 
     fn force_flush(&self, gen: u64) {
@@ -555,6 +652,77 @@ impl Ctl {
                 self.ui("accessibility", json!(now));
             }
         }
+    }
+
+    // ------------------------------------------------------------------ learning from corrections
+
+    /// The correction hotkey: the user fixed the last dictation in the text box. Read it
+    /// back, diff it against what we pasted, and add the corrected names and terms to the
+    /// dictionary (see `learn`: nothing is ever replaced automatically).
+    fn learn(self: &Arc<Self>) {
+        if self.recording() || self.mic.capturing() {
+            // the combo shares a modifier with the dictation key (⌥): that press wasn't dictation
+            self.hotkey_cancel();
+        }
+        if self.learning.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let c = self.clone();
+        std::thread::spawn(move || {
+            c.learn_now();
+            c.learning.store(false, Ordering::SeqCst);
+        });
+    }
+
+    fn learn_note(self: &Arc<Self>, title: &str, detail: String, error: bool) {
+        self.hud(if error { "error" } else { "learned" }, json!({"title": title, "detail": detail}));
+        self.hide_hud_later(if error { 2.6 } else { 2.2 });
+    }
+
+    fn learn_now(self: &Arc<Self>) {
+        let Some((edited, how)) = cz_platform::grab_text() else {
+            return self.learn_note("没读到文字", "选中改好的那段，再按一次".into(), true);
+        };
+        // which dictation is this? the most similar of the recent ones (newest wins a tie)
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64()).unwrap_or(0.0) - 2.0 * 86400.0;
+        let mut best: Option<(f32, Map<String, Value>)> = None;
+        for e in self.store.history(10, 0, "") {
+            if e.get("ts").and_then(|v| v.as_f64()).unwrap_or(0.0) < since {
+                continue;
+            }
+            let text = e.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let score = learn::similarity(text, &edited);
+            if best.as_ref().is_none_or(|(b, _)| score > *b) {
+                best = Some((score, e));
+            }
+        }
+        let Some((score, entry)) = best.filter(|(s, _)| *s >= 0.5) else {
+            eprintln!("[cz] learn: no matching dictation for {} chars from {how}", edited.chars().count());
+            return self.learn_note("没找到对应的输入", "只能纠正最近几次口述的结果".into(), true);
+        };
+        let id = entry.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let text = entry.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        let Some(l) = learn::learn(text, &edited) else {
+            return self.learn_note("文字太长", "选中改过的那段，再按一次".into(), true);
+        };
+        eprintln!("[cz] learn: {how}, match {score:.2}, pairs {:?}, terms {:?}", l.pairs, l.terms);
+        if !l.changed {
+            return self.learn_note("没有发现改动", "先在输入框里改好，再按快捷键".into(), false);
+        }
+        if let Some(e) = self.store.update_entry(&id, "corrected", json!(l.corrected)) {
+            self.ui("entry", Value::Object(e));
+        }
+        let added = self.store.add_words(&l.terms);
+        if !added.is_empty() {
+            self.send(Command::SetDictionary(self.store.dictionary()));
+            self.ui("lexicon", Value::Null);
+            return self.learn_note("已加入词典", added.join("、"), false);
+        }
+        if !l.terms.is_empty() {
+            return self.learn_note("词典里已经有了", l.terms.join("、"), false);
+        }
+        self.learn_note("已记下改正", "没有发现要加进词典的人名或术语".into(), false);
     }
 
     // ------------------------------------------------------------------ memory
@@ -618,11 +786,13 @@ impl Ctl {
             status.insert("progress".into(), json!(self.download_progress()));
         }
         let hk = hotkey_from(s.get("hotkey"));
+        let learn_hk = learn_hotkey_from(s.get("learn_hotkey"));
         let presets: Vec<Value> = Hotkey::presets().into_iter().map(|p| json!({"label": p.label(), "spec": p})).collect();
         json!({
             "status": status,
             "settings": s,
             "hotkey_label": hk.label(),
+            "learn_hotkey_label": learn_hk.label(),
             "hotkey_presets": presets,
             "accessibility": cz_platform::accessibility_trusted(false),
             "stats": self.store.stats(),
@@ -647,6 +817,15 @@ impl Ctl {
             "set_hotkey" => {
                 let spec = hotkey_from(Some(&a(0)));
                 self.store.update_setting("hotkey", serde_json::to_value(spec).unwrap());
+                self.install_hotkey();
+                self.state()
+            }
+            "set_learn_hotkey" => {
+                let spec = learn_hotkey_from(Some(&a(0)));
+                if spec == hotkey_from(self.store.settings().get("hotkey")) {
+                    return Err("和说话快捷键相同".into());
+                }
+                self.store.update_setting("learn_hotkey", serde_json::to_value(spec).unwrap());
                 self.install_hotkey();
                 self.state()
             }
@@ -746,6 +925,7 @@ impl Ctl {
             }
             "asr_model" | "llm_model" if before.get(key) != Some(&value) => self.load_engine(),
             "mic" | "keep_mic_open" => self.configure_mic(),
+            "download_source" => self.downloads.set_source(value.as_str().unwrap_or("auto")),
             _ => self.apply_live_settings(),
         }
         self.state()

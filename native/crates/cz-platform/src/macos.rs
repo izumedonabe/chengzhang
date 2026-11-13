@@ -541,6 +541,47 @@ pub fn hide_window(w: *mut c_void) {
     }
 }
 
+/// WebKit holds pages to ~60 fps even on a 120 Hz ProMotion display ("Prefer Page Rendering
+/// Updates near 60fps", on by default, as in Safari). Turn that off for one of our web views so
+/// animations run at the display's own rate. Private WebKit preference; skipped if absent.
+pub fn unlock_frame_rate(webview: *mut c_void) -> bool {
+    let v = webview as *mut AnyObject;
+    if v.is_null() {
+        return false;
+    }
+    unsafe {
+        let cfg: *mut AnyObject = msg_send![v, configuration];
+        let prefs: *mut AnyObject = if cfg.is_null() { std::ptr::null_mut() } else { msg_send![cfg, preferences] };
+        if prefs.is_null() {
+            return false;
+        }
+        let setter = sel!(_setPreferPageRenderingUpdatesNear60FPSEnabled:);
+        let ok: Bool = msg_send![prefs, respondsToSelector: setter];
+        if ok.as_bool() {
+            let _: () = msg_send![prefs, _setPreferPageRenderingUpdatesNear60FPSEnabled: Bool::NO];
+            return true;
+        }
+        // newer WebKit: the same switch as a "feature"
+        let cls = class!(WKPreferences);
+        let has: Bool = msg_send![cls, respondsToSelector: sel!(_features)];
+        let can: Bool = msg_send![prefs, respondsToSelector: sel!(_setEnabled:forFeature:)];
+        if !has.as_bool() || !can.as_bool() {
+            return false;
+        }
+        let features: *mut AnyObject = msg_send![cls, _features];
+        let n: usize = msg_send![features, count];
+        for i in 0..n {
+            let f: *mut AnyObject = msg_send![features, objectAtIndex: i];
+            let key: *mut NSString = msg_send![f, key];
+            if key.as_ref().is_some_and(|k| k.to_string() == "PreferPageRenderingUpdatesNear60FPSEnabled") {
+                let _: () = msg_send![prefs, _setEnabled: Bool::NO, forFeature: f];
+                return true;
+            }
+        }
+        false
+    }
+}
+
 pub fn has_glass() -> bool {
     AnyClass::get(c"NSGlassEffectView").is_some()
 }

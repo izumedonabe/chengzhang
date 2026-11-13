@@ -125,6 +125,17 @@ fn main() {
                 .initialization_script(if glass { HUD_GLASS } else { "" })
                 .build()?;
             let _ = hud.set_ignore_cursor_events(true);
+            // both pages animate at the display's own rate (120 Hz on ProMotion)
+            for w in [&main, &hud] {
+                let _ = w.with_webview(|v| {
+                    #[cfg(target_os = "macos")]
+                    if !cz_platform::unlock_frame_rate(v.inner()) {
+                        eprintln!("[cz] web view stays near 60 fps");
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = v;
+                });
+            }
             if let Ok(spec) = std::env::var("CZ_TEST_HUD") {
                 let c = ctl.clone();
                 std::thread::spawn(move || {

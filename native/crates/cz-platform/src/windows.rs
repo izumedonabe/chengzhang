@@ -45,6 +45,9 @@ pub fn frontmost_app() -> String {
 }
 pub fn show_without_focus(_w: *mut c_void) {}
 pub fn hide_window(_w: *mut c_void) {}
+pub fn unlock_frame_rate(_webview: *mut c_void) -> bool {
+    false
+}
 pub fn has_glass() -> bool {
     false
 }

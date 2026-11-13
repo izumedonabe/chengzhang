@@ -148,6 +148,12 @@ pub fn hide_window(window: *mut std::ffi::c_void) {
     imp::hide_window(window)
 }
 
+/// Let a web view animate at the display's refresh rate (120 Hz on ProMotion), not ~60 fps.
+/// `webview`: the platform web view (WKWebView on macOS).
+pub fn unlock_frame_rate(webview: *mut std::ffi::c_void) -> bool {
+    imp::unlock_frame_rate(webview)
+}
+
 /// Whether the system has Liquid Glass (macOS 26+).
 pub fn has_glass() -> bool {
     imp::has_glass()

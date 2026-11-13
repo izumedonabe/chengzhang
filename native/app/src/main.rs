@@ -11,6 +11,7 @@ mod models;
 #[cfg(not(target_os = "macos"))]
 #[path = "models_gguf.rs"]
 mod models;
+mod single;
 mod store;
 
 use controller::Ctl;
@@ -55,6 +56,14 @@ fn apply_icon(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    if let single::Instance::Second(location) = single::claim() {
+        eprintln!("[cz] 成章 is already running{}; bringing it forward",
+                  location.as_deref().map(|l| format!(" at {l}")).unwrap_or_default());
+        if let Some(l) = location {
+            single::show_other(&l);
+        }
+        return;
+    }
     let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![api])
         .setup(|app| {

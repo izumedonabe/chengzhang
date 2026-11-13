@@ -30,5 +30,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSMicrophoneUsageDescription</key><string>成章需要麦克风来听你说话。录音只在本机处理，不会上传。</string>
 </dict></plist>
 PLIST
-codesign --force --sign - --identifier app.chengzhang.native "$APP" >/dev/null 2>&1 || true
+# ad-hoc signature whose designated requirement is the bundle id (not the code hash),
+# so macOS keeps the Accessibility / microphone permissions across rebuilds
+codesign --force --sign - --identifier app.chengzhang.native \
+  --requirements '=designated => identifier "app.chengzhang.native"' "$APP" >/dev/null 2>&1 || true
 du -sh "$APP"

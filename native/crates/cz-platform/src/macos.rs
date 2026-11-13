@@ -1,11 +1,12 @@
 //! macOS implementation: Quartz event tap for the hotkey, NSPasteboard + synthetic ⌘V
 //! for paste, AX trust for permissions. AppKit calls must run on the main thread.
 use crate::{Hotkey, HotkeyCallback, HotkeyEvent};
-use objc2::runtime::{AnyObject, Bool};
-use objc2::{class, msg_send};
+use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, Sel};
+use objc2::{class, msg_send, sel};
 use objc2_foundation::{NSRect, NSString};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 // ----------------------------------------------------------------------------- CoreGraphics FFI
 
@@ -343,15 +344,49 @@ pub fn frontmost_app() -> String {
     }
 }
 
+/// NSPanel subclass that never takes key/main status (the HUD must not steal focus).
+fn hud_panel_class() -> &'static AnyClass {
+    static CLS: OnceLock<&'static AnyClass> = OnceLock::new();
+    CLS.get_or_init(|| {
+        extern "C-unwind" fn no(_: &AnyObject, _: Sel) -> Bool {
+            Bool::NO
+        }
+        let mut b = ClassBuilder::new(c"CZHudPanel", class!(NSPanel)).expect("CZHudPanel");
+        unsafe {
+            b.add_method(sel!(canBecomeKeyWindow), no as extern "C-unwind" fn(_, _) -> _);
+            b.add_method(sel!(canBecomeMainWindow), no as extern "C-unwind" fn(_, _) -> _);
+        }
+        b.register()
+    })
+}
+
+/// Turn the (tao) NSWindow into a non-activating NSPanel, once. A regular app's NSWindow is kept
+/// out of another app's full-screen Space even with FullScreenAuxiliary; a non-activating panel
+/// is allowed in. Swapping the class is sound: NSPanel adds no ivars to NSWindow (both 528 bytes),
+/// so tao's own ivars after them stay where they are. Same trick as the tauri-nspanel plugin.
+unsafe fn make_panel(w: *mut AnyObject) {
+    let cls = hud_panel_class();
+    if std::ptr::eq(objc2::ffi::object_getClass(w), cls) {
+        return;
+    }
+    objc2::ffi::object_setClass(w, cls);
+    let mask: usize = msg_send![w, styleMask];
+    let _: () = msg_send![w, setStyleMask: mask | (1usize << 7)]; // NonactivatingPanel
+    let _: () = msg_send![w, setFloatingPanel: Bool::YES];
+    let _: () = msg_send![w, setHidesOnDeactivate: Bool::NO];
+    let _: () = msg_send![w, setBecomesKeyOnlyIfNeeded: Bool::YES];
+}
+
 pub fn show_without_focus(w: *mut c_void) {
     let w = w as *mut AnyObject;
     if w.is_null() {
         return;
     }
     unsafe {
+        make_panel(w);
         let _: () = msg_send![w, setIgnoresMouseEvents: Bool::YES];
-        // CanJoinAllSpaces | Stationary | FullScreenAuxiliary
-        let _: () = msg_send![w, setCollectionBehavior: (1usize << 0) | (1usize << 4) | (1usize << 8)];
+        // CanJoinAllSpaces | Stationary | IgnoresCycle | FullScreenAuxiliary
+        let _: () = msg_send![w, setCollectionBehavior: (1usize << 0) | (1usize << 4) | (1usize << 6) | (1usize << 8)];
         let _: () = msg_send![w, setLevel: 25isize]; // NSStatusWindowLevel
         let _: () = msg_send![w, orderFrontRegardless];
     }

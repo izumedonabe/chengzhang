@@ -25,10 +25,6 @@ strip = false
 # the shell (Tauri, wry, tao…) is optimized for size; the inference path stays at -O3
 [profile.release.package."*"]
 opt-level = "s"
-# never strip dependencies (proc macros are among them): with MACOSX_DEPLOYMENT_TARGET=14.0 the
-# Xcode 27 strip leaves dylibs dyld refuses to load ("mis-aligned LINKEDIT string pool"), and the
-# release build then fails with "can't find crate". Only dylibs are affected; rlibs aren't stripped.
-strip = "none"
 [profile.release.package.cz-core]
 opt-level = 3
 [profile.release.package.cz-llama]

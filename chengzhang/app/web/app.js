@@ -279,6 +279,7 @@ function mockApi() {
     select_model: (kind, id) => { settings[kind === "asr" ? "asr_model" : "llm_model"] = id; return api.state(); },
     download: () => ok(true),
     request_accessibility: () => ok(false),
+    about: () => ok({ version: "0.1.0", repo: "https://github.com/izumedonabe/chengzhang", asr: "Qwen3-ASR 0.6B", llm: "Qwen3.5 4B" }),
     set_hotkey: (spec) => { settings.hotkey = spec; return api.state(); },
     pause_hotkey: () => ok(true),
     mics: () => ok({ mics: [{ name: "MacBook Pro麦克风", builtin: true }, { name: "AirPods", default: true, bluetooth: true }], selected: settings.mic || "auto", resolved: "MacBook Pro麦克风" }),
@@ -805,3 +806,26 @@ function wire() {
 }
 
 wire();
+
+/* ======================================================================= about
+   Deliberately tucked away: the little seal on the painting is the painter's mark;
+   clicking it shows who made this. Esc or a click outside closes it. */
+
+(function about() {
+  const dlg = $("#about");
+  const REPO = "https://github.com/izumedonabe/chengzhang";
+  async function open() {
+    const info = api && api.about ? await api.about() : { version: "dev", repo: REPO, asr: "", llm: "" };
+    $("#about-version").textContent = `版本 ${info.version}`;
+    $("#about-models").textContent = [info.asr, info.llm].filter(Boolean).join("，") + (info.asr ? " 正在工作" : "");
+    dlg.dataset.repo = info.repo || REPO;
+    dlg.showModal();
+  }
+  $("#seal").addEventListener("click", open);
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.close(); });  // the backdrop
+  $$(".about-links a").forEach((a) => a.addEventListener("click", (e) => {
+    e.preventDefault();
+    const url = (dlg.dataset.repo || REPO) + a.dataset.path;
+    if (api && api.open_url) api.open_url(url); else window.open(url, "_blank");
+  }));
+})();

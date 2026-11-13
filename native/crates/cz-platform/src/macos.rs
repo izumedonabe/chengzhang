@@ -416,3 +416,16 @@ pub fn set_app_icon(path: &str) {
         let _: () = msg_send![app, setApplicationIconImage: img];
     }
 }
+
+/// Open a URL in the default browser.
+pub fn open_url(url: &str) -> bool {
+    unsafe {
+        let u: *mut AnyObject = msg_send![class!(NSURL), URLWithString: &*ns(url)];
+        if u.is_null() {
+            return false;
+        }
+        let ws: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let ok: Bool = msg_send![ws, openURL: u];
+        ok.as_bool()
+    }
+}

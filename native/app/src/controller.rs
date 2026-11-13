@@ -14,6 +14,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
+pub const REPO_URL: &str = "https://github.com/izumedonabe/chengzhang";
+
 pub enum Work {
     HotkeyDown(bool),
     HotkeyUp,
@@ -700,6 +702,30 @@ impl Ctl {
                     let _ = self.app.run_on_main_thread(|| cz_platform::open_privacy_pane("Accessibility"));
                 }
                 json!(trusted)
+            }
+            // the About card behind the seal on the painting
+            "about" => {
+                let s = self.store.settings();
+                let name = |id: &str| models::find(id).map(|m| m.name.to_string())
+                    .unwrap_or_else(|| id.rsplit('/').next().unwrap_or("").to_string());
+                let llm = name(&s_str(&s, "llm_model"));
+                json!({
+                    "version": env!("CARGO_PKG_VERSION"),
+                    "repo": REPO_URL,
+                    "asr": name(&s_str(&s, "asr_model")),
+                    "llm": if llm.is_empty() { "不整理".to_string() } else { llm },
+                })
+            }
+            "open_url" => {
+                // only our own repository, like the Python app
+                let url = a_str(0);
+                if !url.starts_with(REPO_URL) {
+                    return Ok(json!(false));
+                }
+                let _ = self.app.run_on_main_thread(move || {
+                    cz_platform::open_url(&url);
+                });
+                json!(true)
             }
             "client_log" => {
                 eprintln!("[ui] {}", a_str(0));

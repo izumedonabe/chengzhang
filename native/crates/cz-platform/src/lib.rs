@@ -155,3 +155,8 @@ pub fn system_is_dark() -> bool {
 pub fn set_app_icon(path: &str) {
     imp::set_app_icon(path)
 }
+
+/// Open a URL in the default browser. Main thread on macOS.
+pub fn open_url(url: &str) -> bool {
+    imp::open_url(url)
+}

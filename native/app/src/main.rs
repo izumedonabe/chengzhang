@@ -52,6 +52,8 @@ fn main() {
             let ctl = Ctl::new(handle.clone());
             app.manage(ctl.clone());
 
+            // CZ_TEST_JS: extra script for automated checks (runs after the page has loaded)
+            let test_js = std::env::var("CZ_TEST_JS").map(|js| format!("window.addEventListener('load', () => setTimeout(() => {{ {js} }}, 1500));")).unwrap_or_default();
             let main = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("成章")
                 .inner_size(1120.0, 740.0)
@@ -60,6 +62,7 @@ fn main() {
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true)
                 .initialization_script(BRIDGE)
+                .initialization_script(&test_js)
                 .build()?;
             if let Ok(ns) = main.ns_window() {
                 cz_platform::style_main_window(ns);

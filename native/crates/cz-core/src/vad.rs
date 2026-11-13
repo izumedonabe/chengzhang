@@ -13,6 +13,8 @@ pub struct VadConfig {
     pub soft_cut_silence_ms: u32,
     pub min_segment_s: f32,
     pub max_segment_s: f32,
+    /// segments with less voiced audio than this are noise, not speech: never transcribed
+    pub min_voiced_ms: u32,
 }
 
 impl Default for VadConfig {
@@ -24,6 +26,7 @@ impl Default for VadConfig {
             soft_cut_silence_ms: 150,
             min_segment_s: 1.5,
             max_segment_s: 25.0,
+            min_voiced_ms: 200,
         }
     }
 }
@@ -36,6 +39,7 @@ pub struct Segmenter {
     cut: usize,                // start of the current (not yet transcribed) segment
     first_speech: Option<usize>, // first speech frame since the last cut
     pub silence_frames: usize,
+    voiced_frames: usize, // speech frames since the last cut
 }
 
 impl Segmenter {
@@ -48,6 +52,7 @@ impl Segmenter {
             cut: 0,
             first_speech: None,
             silence_frames: 0,
+            voiced_frames: 0,
         }
     }
 
@@ -58,6 +63,7 @@ impl Segmenter {
         self.cut = 0;
         self.first_speech = None;
         self.silence_frames = 0;
+        self.voiced_frames = 0;
     }
 
     pub fn total(&self) -> usize {
@@ -99,6 +105,7 @@ impl Segmenter {
                     self.first_speech = Some(start);
                 }
                 self.silence_frames = 0;
+                self.voiced_frames += 1;
             } else {
                 self.silence_frames += 1;
             }
@@ -118,15 +125,22 @@ impl Segmenter {
             } else {
                 continue;
             };
-            segs.push((self.seg_start(), cut_at));
+            if self.voiced_enough() {
+                segs.push((self.seg_start(), cut_at));
+            }
             self.cut = cut_at;
             self.first_speech = None;
+            self.voiced_frames = 0;
         }
         segs
     }
 
-    /// The last, unfinished segment (if it contains speech).
+    fn voiced_enough(&self) -> bool {
+        (self.voiced_frames * FRAME) as f32 * 1000.0 / SR as f32 >= self.cfg.min_voiced_ms as f32
+    }
+
+    /// The last, unfinished segment (if it contains enough speech).
     pub fn finish(&self) -> Option<(usize, usize)> {
-        self.first_speech.map(|_| (self.seg_start(), self.audio.len()))
+        self.first_speech.filter(|_| self.voiced_enough()).map(|_| (self.seg_start(), self.audio.len()))
     }
 }

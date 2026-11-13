@@ -7,7 +7,7 @@
 
 use crate::backend::{Asr, AsrSpec, Backend, Llm, LlmSpec};
 use crate::prompts;
-use crate::text::{join_segments, needs_llm, suspicious};
+use crate::text::{join_segments, needs_llm, strip_context_echo, suspicious};
 use crate::vad::{Segmenter, VadConfig, SR};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -421,6 +421,7 @@ impl Worker {
         let ctx = prompts::asr_context(&self.cfg.dictionary);
         let asr = self.asr.as_mut().ok_or("speech model not loaded")?;
         let text = asr.transcribe(self.seg.audio(start, end), &ctx, self.cfg.language.as_deref())?;
+        let text = strip_context_echo(&text, &self.cfg.dictionary);
         let asr_s = t.elapsed().as_secs_f32();
         let t = Instant::now();
         if !text.is_empty() {

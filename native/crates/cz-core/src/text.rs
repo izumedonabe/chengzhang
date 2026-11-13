@@ -70,9 +70,75 @@ pub fn suspicious(raw: &str, out: &str, mode: Option<&str>) -> bool {
     o == 0.0 || o < 0.35 * r || o > 1.8 * r + 20.0
 }
 
+/// Qwen3-ASR gets the personal dictionary as context; on unclear audio (noise, a talk
+/// heard from across the room) it can "transcribe" that context back verbatim:
+/// "OpenTypeLess, database, README, …". Remove runs that copy most of the list in its
+/// own order. A sentence that merely uses a few dictionary words is left alone.
+pub fn strip_context_echo(text: &str, dict: &[String]) -> String {
+    let words: Vec<&str> = dict.iter().map(|w| w.trim()).filter(|w| !w.is_empty()).collect();
+    if words.len() < 3 {
+        return text.to_string();
+    }
+    let need = 3.max((words.len() * 3 + 4) / 5); // >= 60% of the list, at least 3
+    let is_sep = |c: char| matches!(c, ',' | '，' | '、' | ';' | '；' | ' ' | '\u{3000}');
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        // try to read words[k], words[k+1], … starting here
+        let mut best: Option<usize> = None;
+        for start in 0..words.len() {
+            let (mut j, mut n, mut k) = (i, 0, start);
+            while k < words.len() {
+                let mut p = j;
+                if n > 0 {
+                    while let Some(c) = text[p..].chars().next().filter(|&c| is_sep(c)) {
+                        p += c.len_utf8();
+                    }
+                }
+                if !text[p..].starts_with(words[k]) {
+                    break;
+                }
+                j = p + words[k].len();
+                n += 1;
+                k += 1;
+            }
+            if n >= need && best.map_or(true, |b| j > b) {
+                best = Some(j);
+            }
+        }
+        if let Some(mut j) = best {
+            // drop the separator / full stop that followed the echo
+            while let Some(c) = text[j..].chars().next().filter(|&c| is_sep(c) || matches!(c, '。' | '.')) {
+                j += c.len_utf8();
+            }
+            i = j;
+            continue;
+        }
+        let c = text[i..].chars().next().unwrap();
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_echo() {
+        let d: Vec<String> = ["OpenTypeLess", "database", "README", "UI稿", "fail to pass", "pass to pass", "Qwen"]
+            .iter().map(|s| s.to_string()).collect();
+        assert_eq!(strip_context_echo("OpenTypeLess, database, README, UI稿, fail to pass, pass to pass, Qwen", &d), "");
+        assert_eq!(
+            strip_context_echo("说：“你的是平常。”OpenTypeLess, database, README, UI稿, fail to pass, pass to pass, Qwen嗯，应该挺好的。", &d),
+            "说：“你的是平常。”嗯，应该挺好的。"
+        );
+        // ordinary use of a few dictionary words stays
+        let s = "把 README 和 database 的 UI稿 发给我";
+        assert_eq!(strip_context_echo(s, &d), s);
+        assert_eq!(strip_context_echo("OpenTypeLess、database、README 都要改", &d), "OpenTypeLess、database、README 都要改");
+    }
 
     #[test]
     fn basics() {

@@ -138,11 +138,7 @@
       <button class="btn" type="submit">添加</button>
     </form>
     <ul class="words" id="words"></ul>
-    <div class="learned" id="learned" hidden>
-      <h2>改正过的识别错误</h2>
-      <p class="learned-note">识别错了就在输入框里直接改，改好后按 <kbd class="lk"></kbd>。成章会记下改了哪些词，以后识别和整理时照着改，人名、术语的正确写法也会加进上面的词典。</p>
-      <ul class="words" id="pairs"></ul>
-    </div>
+    <p class="learned-note" id="learned" hidden>识别错了就在输入框里直接改，改好后按 <kbd class="lk"></kbd>。改正后的人名、术语会自动加进上面的词典，以后识别和整理时会优先写成这样。</p>
   </section>
 
   <section class="page" id="page-models" hidden>
@@ -182,7 +178,7 @@
         </div>
       </div>
       <div class="setting" id="learn-setting" hidden>
-        <div><h3>纠错快捷键</h3><p>识别有错时，在输入框里改好再按：成章会记住改了哪些词，以后照着改。没有选中文字时读整个输入框。</p></div>
+        <div><h3>纠错快捷键</h3><p>识别有错时，在输入框里改好再按：改正后的人名、术语会自动加进词典。没有选中文字时读整个输入框。</p></div>
         <div class="hotkey" id="learn-hotkey">
           <kbd class="hotkey-now" id="learn-hotkey-now"></kbd>
           <button class="btn quiet" id="learn-hotkey-record" type="button">更换</button>
@@ -256,6 +252,16 @@
       <div class="setting">
         <div><h3>现在</h3><p id="mem-now"></p></div>
         <button class="btn quiet" id="mem-action" type="button"></button>
+      </div>
+    </div>
+
+    <div id="dl-source-setting" hidden>
+      <h2 class="group">下载</h2>
+      <div class="settings">
+        <div class="setting">
+          <div><h3>模型下载源</h3><p>在国内访问 Hugging Face 不稳定时选 ModelScope。"自动"会先试 Hugging Face，连不上就换 ModelScope。</p></div>
+          <div class="seg" id="set-dl-source" role="radiogroup" aria-label="模型下载源"></div>
+        </div>
       </div>
     </div>
   </section>

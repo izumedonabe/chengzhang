@@ -6,7 +6,6 @@
 //! `Engine::send()` and the event callback.
 
 use crate::backend::{Asr, AsrSpec, Backend, Llm, LlmSpec};
-use crate::learn::{self, Pair};
 use crate::prompts;
 use crate::text::{join_segments, needs_llm, strip_context_echo, suspicious};
 use crate::vad::{Segmenter, VadConfig, SR};
@@ -20,8 +19,6 @@ pub struct Config {
     pub llm: Option<LlmSpec>, // None = no polishing
     pub language: Option<String>,
     pub dictionary: Vec<String>,
-    /// Learned corrections, most recent first (see `learn`).
-    pub corrections: Vec<Pair>,
     pub translate: Option<String>,      // default mode (CLI --translate)
     pub translate_lang: Option<String>, // extra mode available per utterance (Shift+hotkey)
     pub fast_path: bool,
@@ -41,7 +38,6 @@ impl Config {
             llm,
             language: Some("Chinese".into()),
             dictionary: vec![],
-            corrections: vec![],
             translate: None,
             translate_lang: None,
             fast_path: true,
@@ -71,8 +67,6 @@ pub enum Command {
     Unload { all: bool },
     Reload,
     SetDictionary(Vec<String>),
-    /// Dictionary and learned corrections together (one prompt rebuild).
-    SetLexicon { dictionary: Vec<String>, corrections: Vec<Pair> },
     SetTranslateLang(Option<String>),
     Live(LiveSettings),
     Quit,
@@ -124,6 +118,9 @@ pub enum Event {
     Text(String),
     Done(Box<Outcome>),
     PromptsRebuilt { secs: f32 },
+    /// A Cancel was processed. Everything emitted before this belonged to the cancelled
+    /// dictation; everything after it to the next one.
+    Canceled,
     Error(String),
 }
 
@@ -175,7 +172,7 @@ struct Polisher {
 
 
 impl Polisher {
-    fn build(&mut self, modes: &[Option<String>], dictionary: &[String], corrections: &[Pair]) -> Result<(), String> {
+    fn build(&mut self, modes: &[Option<String>], dictionary: &[String]) -> Result<(), String> {
         self.modes.clear();
         for m in modes {
             if !self.modes.contains(m) && self.modes.len() < self.llm.slots() {
@@ -183,7 +180,7 @@ impl Polisher {
             }
         }
         for (i, m) in self.modes.iter().enumerate() {
-            self.llm.set_prefix(i, &prompts::prefix(dictionary, corrections, m.as_deref()))?;
+            self.llm.set_prefix(i, &prompts::prefix(dictionary, m.as_deref()))?;
         }
         self.live = None;
         Ok(())
@@ -291,6 +288,7 @@ impl Worker {
                         p.live = None;
                         p.llm.end();
                     }
+                    (self.emit)(Event::Canceled);
                     Ok(())
                 }
                 Command::Unload { all } => {
@@ -300,11 +298,6 @@ impl Worker {
                 Command::Reload => self.load(true),
                 Command::SetDictionary(words) => {
                     self.cfg.dictionary = words;
-                    self.rebuild_prompts()
-                }
-                Command::SetLexicon { dictionary, corrections } => {
-                    self.cfg.dictionary = dictionary;
-                    self.cfg.corrections = corrections;
                     self.rebuild_prompts()
                 }
                 Command::SetTranslateLang(lang) => {
@@ -363,7 +356,7 @@ impl Worker {
                 let slots = if self.cfg.translate.is_some() { 3 } else { 2 };
                 let llm = self.backend.load_llm(&spec, slots)?;
                 let mut p = Polisher { llm, modes: vec![], live: None };
-                p.build(&self.modes(), &self.cfg.dictionary, &self.cfg.corrections)?;
+                p.build(&self.modes(), &self.cfg.dictionary)?;
                 (self.emit)(Event::Loading { stage: "warmup", progress: 0.85, reload });
                 p.run("嗯那个我们明天开会吧", &None, false, 16, &mut |_| {})?;
                 self.polisher = Some(p);
@@ -393,7 +386,7 @@ impl Worker {
         let modes = self.modes();
         if let Some(p) = &mut self.polisher {
             let t = Instant::now();
-            p.build(&modes, &self.cfg.dictionary, &self.cfg.corrections)?;
+            p.build(&modes, &self.cfg.dictionary)?;
             (self.emit)(Event::PromptsRebuilt { secs: t.elapsed().as_secs_f32() });
         }
         Ok(())
@@ -433,8 +426,6 @@ impl Worker {
         let asr = self.asr.as_mut().ok_or("speech model not loaded")?;
         let text = asr.transcribe(self.seg.audio(start, end), &ctx, self.cfg.language.as_deref())?;
         let text = strip_context_echo(&text, &self.cfg.dictionary);
-        // learned mistakes: English ones always, Chinese ones only without a polisher to judge them
-        let text = learn::apply(&text, &self.cfg.corrections, self.polisher.is_none());
         let asr_s = t.elapsed().as_secs_f32();
         let t = Instant::now();
         if !text.is_empty() {
@@ -517,7 +508,7 @@ impl Worker {
         let mode = self.mode.clone();
         match &mut self.polisher {
             Some(p) if !raw.is_empty()
-                && (needs_llm(&raw, mode.as_deref(), self.cfg.fast_path) || learn::mentions(&raw, &self.cfg.corrections)) => {
+                && needs_llm(&raw, mode.as_deref(), self.cfg.fast_path) => {
                 match p.run(&raw, &mode, self.cfg.incremental_prefill, self.cfg.max_tokens, &mut on_text) {
                     Ok((out, stats)) => {
                         if suspicious(&raw, &out, mode.as_deref()) {
@@ -562,5 +553,78 @@ impl Worker {
         };
         (self.emit)(Event::Done(Box::new(outcome)));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend::Result;
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Duration;
+
+    struct FakeAsr;
+    impl Asr for FakeAsr {
+        fn transcribe(&mut self, _: &[f32], _: &str, _: Option<&str>) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+    struct FakeBackend;
+    impl Backend for FakeBackend {
+        fn load_asr(&self, _: &AsrSpec) -> Result<Box<dyn Asr>> {
+            Ok(Box::new(FakeAsr))
+        }
+        fn load_llm(&self, _: &LlmSpec, _: usize) -> Result<Box<dyn Llm>> {
+            Err("no llm in this test".into())
+        }
+    }
+
+    /// Drive a fresh engine with `cmds` and return the names of the session events it emits.
+    fn events(cmds: Vec<Command>) -> Vec<&'static str> {
+        let (tx, rx) = channel();
+        let cfg = Config::new(AsrSpec { model: "asr".into(), mmproj: "mmproj".into() }, None);
+        let eng = Engine::spawn(cfg, Arc::new(FakeBackend), Box::new(move |e| {
+            let _ = tx.send(e);
+        }));
+        for c in cmds {
+            eng.send(c);
+        }
+        let mut out = vec![];
+        loop {
+            match rx.recv_timeout(Duration::from_millis(500)) {
+                Ok(Event::CaptureDone { .. }) => out.push("capture_done"),
+                Ok(Event::Done(_)) => out.push("done"),
+                Ok(Event::Canceled) => out.push("canceled"),
+                Ok(Event::Error(e)) => panic!("{e}"),
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        out
+    }
+
+    /// The app relies on this order: whatever belongs to a dictation that was given up on
+    /// comes before Canceled, and nothing of it comes after.
+    #[test]
+    fn cancel_is_acknowledged_after_everything_of_the_cancelled_dictation() {
+        let pcm = vec![0.0f32; SR / 2];
+        // esc while it was still being finished: its Done is already on the way
+        assert_eq!(
+            events(vec![Command::Start(Some(String::new())), Command::Audio(pcm.clone()),
+                        Command::End(Instant::now()), Command::Cancel]),
+            ["capture_done", "done", "canceled"]
+        );
+        // esc while recording: no Done at all, even if End and Flush still arrive
+        assert_eq!(
+            events(vec![Command::Start(Some(String::new())), Command::Audio(pcm.clone()), Command::Cancel,
+                        Command::End(Instant::now()), Command::Flush]),
+            ["canceled"]
+        );
+        // and the next dictation is unaffected
+        assert_eq!(
+            events(vec![Command::Start(Some(String::new())), Command::Cancel,
+                        Command::Start(Some(String::new())), Command::Audio(pcm), Command::End(Instant::now())]),
+            ["canceled", "capture_done", "done"]
+        );
     }
 }

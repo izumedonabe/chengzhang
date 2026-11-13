@@ -145,7 +145,7 @@ fn gen_test(dir: &std::path::Path, slots: usize) {
     let b = cz_llama::LlamaBackend;
     let mut llm = b.load_llm(&LlmSpec { model: dir.join("Qwen3.5-4B-Q4_K_M.gguf"), n_ctx: 3072 }, slots).unwrap();
     for s in 0..slots {
-        llm.set_prefix(s, &cz_core::prompts::prefix(&[], &[], None)).unwrap();
+        llm.set_prefix(s, &cz_core::prompts::prefix(&[], None)).unwrap();
     }
     for round in 0..3 {
         llm.begin(0).unwrap();

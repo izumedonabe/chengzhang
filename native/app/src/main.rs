@@ -25,8 +25,38 @@ const BRIDGE: &str = r#"
   const api = new Proxy({}, { get: (_, m) => (...args) => invoke(String(m), args) });
   window.pywebview = { api, native: true };
   window.addEventListener("DOMContentLoaded", () => window.dispatchEvent(new Event("pywebviewready")));
+  // The page runs under the (transparent) title bar, so the window has no native drag
+  // area: drag it by the top strip or the empty sidebar, double-click to zoom.
+  const DRAG_STRIP = 52;
+  const draggable = (e) => {
+    if (e.button !== 0) return false;
+    const t = e.target instanceof Element ? e.target : null;
+    if (!t || t.closest("a, button, input, select, textarea, label, summary, [contenteditable], [role=button], [role=radio], [role=switch], .seg, dialog, .no-drag")) return false;
+    return e.clientY < DRAG_STRIP || !!t.closest(".rail");
+  };
+  window.addEventListener("mousedown", (e) => {
+    if (!draggable(e)) return;
+    e.preventDefault();
+    window.__TAURI_INTERNALS__.invoke(e.detail === 2 ? "zoom_window" : "drag_window");
+  }, true);
 })();
 "#;
+
+/// Move the window with the mouse (the press that started it is still down).
+#[tauri::command]
+fn drag_window(window: tauri::WebviewWindow) {
+    let _ = window.start_dragging();
+}
+
+/// Double-click on the title area: zoom / unzoom, like a native title bar.
+#[tauri::command]
+fn zoom_window(window: tauri::WebviewWindow) {
+    if window.is_maximized().unwrap_or(false) {
+        let _ = window.unmaximize();
+    } else {
+        let _ = window.maximize();
+    }
+}
 
 #[tauri::command]
 fn api(state: tauri::State<'_, Arc<Ctl>>, method: String, args: Vec<Value>) -> Result<Value, String> {
@@ -55,7 +85,7 @@ fn main() {
         return;
     }
     let app = tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![api])
+        .invoke_handler(tauri::generate_handler![api, drag_window, zoom_window])
         .setup(|app| {
             let handle = app.handle().clone();
             let ctl = Ctl::new(handle.clone());
